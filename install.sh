@@ -21,7 +21,7 @@ SRC_DIR="/opt/nodewatch/src"
 SERVICE_FILE="/etc/systemd/system/nodewatch.service"
 BIN_LINK="/usr/local/bin/nodewatch"
 DEFAULT_PORT="8080"
-REPO_DEFAULT="https://github.com/nodewatch/nodewatch.git"
+REPO_DEFAULT="https://github.com/Amiir-Dark/Monitoriing.git"
 
 print_banner() {
     clear
