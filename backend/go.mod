@@ -5,8 +5,8 @@ go 1.22
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	golang.org/x/crypto v0.57.0
-	modernc.org/sqlite v1.60.1
+	golang.org/x/crypto v0.22.0
+	modernc.org/sqlite v1.29.5
 )
 
 require (
