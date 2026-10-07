@@ -4,8 +4,6 @@
 # Interactive Installer & Service Management Console
 # ==============================================================================
 
-set -e
-
 # Terminal colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +13,29 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
+
+# Helper for pipe-safe and tty-safe user input
+read_input() {
+    local prompt="$1"
+    local default_val="$2"
+    local input=""
+    if [ -r /dev/tty ]; then
+        read -rp "$prompt" input < /dev/tty 2>/dev/null || true
+    elif [ -t 0 ]; then
+        read -rp "$prompt" input 2>/dev/null || true
+    fi
+    echo "${input:-$default_val}"
+}
+
+read_pause() {
+    local prompt="${1:-Press Enter to continue...}"
+    if [ -r /dev/tty ]; then
+        read -rp "$prompt" _dummy < /dev/tty 2>/dev/null || true
+    elif [ -t 0 ]; then
+        read -rp "$prompt" _dummy 2>/dev/null || true
+    fi
+}
+
 
 INSTALL_DIR="/opt/nodewatch"
 SRC_DIR="/opt/nodewatch/src"
@@ -100,7 +121,7 @@ show_status() {
         ss -tulpn | grep "$port" || echo "(Port not currently listening)"
     fi
     echo ""
-    read -rp "Press Enter to return to menu..."
+    read_pause "Press Enter to return to menu..."
 }
 
 restart_service() {
@@ -112,14 +133,14 @@ restart_service() {
     else
         echo -e "${RED}✖ Failed to restart. Inspect logs with option 5.${NC}"
     fi
-    read -rp "Press Enter to continue..."
+    read_pause
 }
 
 stop_service() {
     echo -e "\n${YELLOW}Stopping NodeWatch service...${NC}"
     systemctl stop nodewatch
     echo -e "${GREEN}✔ NodeWatch service stopped.${NC}"
-    read -rp "Press Enter to continue..."
+    read_pause
 }
 
 start_service() {
@@ -131,7 +152,7 @@ start_service() {
     else
         echo -e "${RED}✖ Service failed to start. View logs with option 5.${NC}"
     fi
-    read -rp "Press Enter to continue..."
+    read_pause
 }
 
 view_logs() {
@@ -144,7 +165,8 @@ change_port() {
     local current_port
     current_port=$(get_current_port)
     echo -e "Current configured port: ${CYAN}${current_port}${NC}"
-    read -rp "Enter new port [1024-65535]: " new_port
+    local new_port
+    new_port=$(read_input "Enter new port [1024-65535]: " "$current_port")
     if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
         echo -e "${RED}[ERROR] Invalid port number.${NC}"
         sleep 2
@@ -158,7 +180,7 @@ change_port() {
     local ip
     ip=$(get_public_ip)
     echo -e "Dashboard URL: ${CYAN}http://${ip}:${new_port}${NC}"
-    read -rp "Press Enter to continue..."
+    read_pause
 }
 
 backup_database() {
@@ -182,7 +204,7 @@ backup_database() {
     else
         echo -e "${RED}[ERROR] Database file not found at $INSTALL_DIR/data/nodewatch.db${NC}"
     fi
-    read -rp "Press Enter to continue..."
+    read_pause
 }
 
 update_nodewatch() {
@@ -202,7 +224,7 @@ update_nodewatch() {
         mkdir -p "$SRC_DIR"
         git clone "$REPO_DEFAULT" "$SRC_DIR" || {
             echo -e "${RED}[ERROR] Failed to clone repository.${NC}"
-            read -rp "Press Enter to continue..."
+            read_pause
             return
         }
         build_src="$SRC_DIR"
@@ -239,7 +261,7 @@ update_nodewatch() {
     else
         echo -e "${RED}✖ NodeWatch update completed but service failed to start. View logs with option 5.${NC}"
     fi
-    read -rp "Press Enter to continue..."
+    read_pause
 }
 
 uninstall_nodewatch() {
@@ -248,7 +270,8 @@ uninstall_nodewatch() {
     echo -e "${RED}${BOLD}                        UNINSTALL NODEWATCH                        ${NC}"
     echo -e "${RED}${BOLD}====================================================================${NC}"
     echo -e "This will stop and remove the NodeWatch central monitoring service."
-    read -rp "Are you sure you want to proceed? [y/N]: " confirm
+    local confirm
+    confirm=$(read_input "Are you sure you want to proceed? [y/N]: " "n")
     if [[ ! "$confirm" =~ ^[yY]$ ]]; then
         echo "Uninstall cancelled."
         sleep 1
@@ -261,7 +284,8 @@ uninstall_nodewatch() {
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload
 
-    read -rp "Do you want to delete all stored metrics and database? [y/N]: " remove_db
+    local remove_db
+    remove_db=$(read_input "Do you want to delete all stored metrics and database? [y/N]: " "n")
     if [[ "$remove_db" =~ ^[yY]$ ]]; then
         rm -rf "$INSTALL_DIR"
         echo -e "${GREEN}✔ Removed /opt/nodewatch and all database records.${NC}"
@@ -374,7 +398,8 @@ do_install() {
             echo -e " ۱) ریپازیتوری را در گیت‌هاب Public کنید (Settings -> Make Public)."
             echo -e " ۲) یا یک توکن GitHub Personal Access Token (PAT) وارد کنید."
             echo -e "${YELLOW}------------------------------------------------------------${NC}\n"
-            read -rp "Enter GitHub Token (یا اینتر بزنید برای تلاش مجدد): " gh_token
+            local gh_token
+            gh_token=$(read_input "Enter GitHub Token (یا اینتر بزنید برای تلاش مجدد): " "")
             if [ -n "$gh_token" ]; then
                 git clone "https://${gh_token}@github.com/Amiir-Dark/Monitoriing.git" "$SRC_DIR"
             else
@@ -416,8 +441,10 @@ do_install() {
 
     # Ask for port
     echo -e "\n${BOLD}Configuration:${NC}"
-    read -rp "Enter port to run NodeWatch on [Default: 8080]: " user_port
-    local run_port="${user_port:-8080}"
+    local user_port
+    user_port=$(read_input "Enter port to run NodeWatch on [Default: 8080]: " "8080")
+    local run_port="${PORT:-$user_port}"
+    echo -e "Configured port: ${CYAN}${run_port}${NC}"
 
     # Create systemd service
     cat <<EOF > "$SERVICE_FILE"
@@ -493,7 +520,8 @@ show_menu() {
         echo -e "  ${BOLD}[0]${NC}  Exit                       (خروج)"
         echo -e "${BLUE}====================================================================${NC}"
 
-        read -rp "Select an option [0-10]: " choice
+        local choice
+        choice=$(read_input "Select an option [0-10]: " "0")
         case $choice in
             1) show_status ;;
             2) restart_service ;;
