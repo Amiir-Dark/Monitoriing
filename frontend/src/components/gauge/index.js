@@ -8,5 +8,8 @@ export { default as GaugeValue } from './GaugeValue';
 export { default as GaugeZones } from './GaugeZones';
 export { default as RadialSpeedometer } from './RadialSpeedometer';
 export { default as MiniRadialGauge } from './MiniRadialGauge';
+export { default as GaugeDial } from './GaugeDial';
+export { default as GaugeCard } from './GaugeCard';
+export { default as SegmentBar } from './SegmentBar';
 export { useGauge } from './GaugeContext';
 export * from './math';

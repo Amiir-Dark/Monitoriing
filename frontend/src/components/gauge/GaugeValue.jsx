@@ -7,6 +7,9 @@ export default function GaugeValue({
   x = 0,
   y = 0,
   fontSize = 20,
+  halo = false,
+  haloColor = '#0f172a',
+  haloWidth = 4,
   className = '',
   style = {},
   ...props
@@ -30,6 +33,14 @@ export default function GaugeValue({
         fontWeight="800"
         fontFamily="system-ui, -apple-system, sans-serif"
         letterSpacing="-0.03em"
+        {...(halo
+          ? {
+              stroke: haloColor,
+              strokeWidth: haloWidth,
+              strokeLinejoin: 'round',
+              paintOrder: 'stroke',
+            }
+          : {})}
       >
         {formatter(value)}
         {unit && (

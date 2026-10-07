@@ -12,6 +12,10 @@ export default function GaugeTicks({
   subTicks = 0,
   showLabels = false,
   labelFormatter = (v) => Math.round(v),
+  labelOffset = 16,
+  labelFontSize = 10,
+  labelColor = 'rgba(148, 163, 184, 0.8)',
+  labelClassName = 'font-mono',
   className = '',
   style = {},
   ...props
@@ -86,6 +90,28 @@ export default function GaugeTicks({
           opacity={tick.isMajor ? 0.85 : 0.45}
         />
       ))}
+
+      {showLabels &&
+        tickData
+          .filter((tick) => tick.isMajor)
+          .map((tick, idx) => {
+            const p = polar(radius + labelOffset, tick.angle);
+            return (
+              <text
+                key={`label-${idx}`}
+                x={p.x.toFixed(2)}
+                y={p.y.toFixed(2)}
+                textAnchor="middle"
+                dominantBaseline="central"
+                fill={labelColor}
+                fontSize={labelFontSize}
+                fontFamily="'JetBrains Mono', ui-monospace, monospace"
+                className={labelClassName}
+              >
+                {labelFormatter(tick.val)}
+              </text>
+            );
+          })}
     </g>
   );
 }
