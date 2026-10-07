@@ -1015,6 +1015,9 @@ func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 	// Serve index.html for client side routing
 	indexPath := filepath.Join(s.distPath, "index.html")
 	if _, err := os.Stat(indexPath); err == nil {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		http.ServeFile(w, r, indexPath)
 		return
 	}

@@ -259,13 +259,69 @@ update_nodewatch() {
         cp -r "$build_src/frontend/dist" "$INSTALL_DIR/dist"
     fi
 
+    # Update legacy port 8080 to new standard default 8765
+    if grep -q '\-port 8080' "$SERVICE_FILE" 2>/dev/null; then
+        echo -e "${YELLOW}Migrating service port from 8080 to standard 8765...${NC}"
+        sed -i -E "s/-port 8080/-port 8765/" "$SERVICE_FILE"
+        systemctl daemon-reload
+    fi
+
+    # Setup master server agent monitoring if not configured yet
+    if [ ! -f "/etc/nodewatch/agent.json" ]; then
+        echo -e "${CYAN}Enabling Master Server self-monitoring agent...${NC}"
+        mkdir -p /etc/nodewatch
+        local cur_port
+        cur_port=$(get_current_port)
+        local node_res
+        node_res=$("$INSTALL_DIR/nodewatch" create-node "Master Server (Local)" -db "$INSTALL_DIR/data/nodewatch.db" 2>/dev/null || true)
+        local master_token
+        master_token=$(echo "$node_res" | grep 'NODE_TOKEN=' | cut -d'=' -f2)
+        if [ -n "$master_token" ]; then
+            cat <<AGENT_CONF > /etc/nodewatch/agent.json
+{
+  "server_url": "http://127.0.0.1:$cur_port",
+  "node_token": "$master_token",
+  "interval": 5
+}
+AGENT_CONF
+            chmod 600 /etc/nodewatch/agent.json
+
+            cat <<AGENT_SVC > /etc/systemd/system/nodewatch-agent.service
+[Unit]
+Description=NodeWatch Monitoring Agent (Master Node)
+After=network.target nodewatch.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=$INSTALL_DIR/nodewatch-agent -config /etc/nodewatch/agent.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+AGENT_SVC
+
+            systemctl daemon-reload
+            systemctl enable nodewatch-agent
+            systemctl restart nodewatch-agent
+        fi
+    fi
+
     echo -e "${CYAN}Restarting services...${NC}"
     systemctl restart nodewatch
     systemctl restart nodewatch-agent 2>/dev/null || true
     sleep 1
 
+    local cur_port
+    cur_port=$(get_current_port)
+    local ip
+    ip=$(get_public_ip)
+
     if systemctl is-active --quiet nodewatch; then
         echo -e "${GREEN}✔ NodeWatch updated and restarted successfully!${NC}"
+        echo -e "  🌐 Dashboard URL: ${CYAN}http://${ip}:${cur_port}${NC}"
     else
         echo -e "${RED}✖ NodeWatch update completed but service failed to start. View logs with option 5.${NC}"
     fi
@@ -628,8 +684,17 @@ elif [ "$1" == "--uninstall" ]; then
 fi
 
 # Automatic detection: First time vs Subsequent
-if is_installed; then
-    show_menu
+if [ "$1" == "--reinstall" ]; then
+    do_install
+elif is_installed; then
+    # If running in interactive terminal (e.g. typing `nodewatch`), show menu
+    if [ -t 0 ]; then
+        show_menu
+    else
+        # Running via pipe (e.g. curl | bash) - automatically run update
+        echo -e "\n${CYAN}NodeWatch is already installed. Running automated update to latest version...${NC}"
+        update_nodewatch
+    fi
 else
     do_install
 fi
