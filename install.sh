@@ -214,7 +214,8 @@ update_nodewatch() {
     echo -e "${CYAN}Rebuilding backend binary...${NC}"
     ensure_go
     export GOTOOLCHAIN=local
-    export GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
+    export GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct
+    go env -w GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct 2>/dev/null || true
     local go_ver
     go_ver=$(go version | awk '{print $3}' | sed 's/go//' | cut -d'.' -f1,2)
     if [ -n "$go_ver" ]; then
@@ -390,7 +391,8 @@ do_install() {
     echo -e "\n${CYAN}Compiling NodeWatch central binary...${NC}"
     ensure_go
     export GOTOOLCHAIN=local
-    export GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
+    export GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct
+    go env -w GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct 2>/dev/null || true
     local go_ver
     go_ver=$(go version | awk '{print $3}' | sed 's/go//' | cut -d'.' -f1,2)
     if [ -n "$go_ver" ]; then

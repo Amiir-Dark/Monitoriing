@@ -183,7 +183,8 @@ EOF
         cp ./nodewatch-agent "$INSTALL_DIR/nodewatch-agent"
     elif command -v go >/dev/null 2>&1 && [ -d "./agent" ]; then
         export GOTOOLCHAIN=local
-        export GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+        export GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct
+        go env -w GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct 2>/dev/null || true
         (cd ./agent && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch-agent" ./cmd/nodewatch-agent)
     else
         # Download from central server /downloads endpoint
