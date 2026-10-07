@@ -68,8 +68,10 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
 
-	// Agent installer script
+	// Agent installer script & binary downloads
 	mux.HandleFunc("GET /install.sh", s.handleInstallScript)
+	mux.HandleFunc("GET /downloads/{file}", s.handleDownloadFile)
+	mux.HandleFunc("GET /api/agent/download", s.handleDownloadAgent)
 
 	// Agent ingestion endpoints (Authenticated by node token)
 	mux.HandleFunc("POST /api/agent/register", s.handleAgentRegister)
@@ -186,16 +188,64 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "database": "connected"})
 }
 
+// getBaseURL dynamically resolves the public address of the server
+func (s *Server) getBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := r.Host
+	if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
+		return fmt.Sprintf("%s://%s", scheme, host)
+	}
+	if s.serverURL != "" && !strings.Contains(s.serverURL, "localhost") && !strings.Contains(s.serverURL, "127.0.0.1") {
+		return s.serverURL
+	}
+	if host != "" {
+		return fmt.Sprintf("%s://%s", scheme, host)
+	}
+	return "http://localhost:8765"
+}
+
+func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	file := filepath.Base(r.PathValue("file"))
+	paths := []string{
+		filepath.Join("/opt/nodewatch/downloads", file),
+		filepath.Join("./downloads", file),
+		filepath.Join("/opt/nodewatch", file),
+		filepath.Join(".", file),
+		filepath.Join("/opt/nodewatch", "nodewatch-agent"),
+	}
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", file))
+			http.ServeFile(w, r, p)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleDownloadAgent(w http.ResponseWriter, r *http.Request) {
+	paths := []string{
+		"/opt/nodewatch/downloads/nodewatch-agent-amd64",
+		"/opt/nodewatch/nodewatch-agent",
+		"./downloads/nodewatch-agent-amd64",
+		"./nodewatch-agent",
+	}
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			w.Header().Set("Content-Disposition", "attachment; filename=\"nodewatch-agent\"")
+			http.ServeFile(w, r, p)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
 // Agent installer script handler
 func (s *Server) handleInstallScript(w http.ResponseWriter, r *http.Request) {
-	srvURL := s.serverURL
-	if srvURL == "" {
-		scheme := "http"
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		srvURL = fmt.Sprintf("%s://%s", scheme, r.Host)
-	}
+	srvURL := s.getBaseURL(r)
 
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 set -e
@@ -223,11 +273,11 @@ echo "          NodeWatch Agent Installer             "
 echo "================================================"
 
 ARCH=$(uname -m)
+AGENT_ARCH="amd64"
 case $ARCH in
     x86_64) AGENT_ARCH="amd64" ;;
     aarch64|arm64) AGENT_ARCH="arm64" ;;
     armv7l|armhf) AGENT_ARCH="arm" ;;
-    *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
 echo "Detected architecture: $AGENT_ARCH"
@@ -243,11 +293,16 @@ cat <<EOF > /etc/nodewatch/agent.json
 EOF
 chmod 600 /etc/nodewatch/agent.json
 
-# If agent binary is available on server, download it
-if curl -s -f -o /opt/nodewatch/nodewatch-agent "$SERVER_URL/downloads/nodewatch-agent-$AGENT_ARCH"; then
+# 1. Download precompiled agent directly from central server or fallback to repo
+echo "Downloading NodeWatch Agent..."
+if curl -s -f -o /opt/nodewatch/nodewatch-agent "$SERVER_URL/downloads/nodewatch-agent-$AGENT_ARCH" || \
+   curl -s -f -o /opt/nodewatch/nodewatch-agent "$SERVER_URL/downloads/nodewatch-agent" || \
+   curl -s -f -o /opt/nodewatch/nodewatch-agent "$SERVER_URL/api/agent/download"; then
     chmod +x /opt/nodewatch/nodewatch-agent
 else
-    echo "Note: Using local nodewatch-agent if present in PATH or directory"
+    echo "Fetching agent installer from central repository..."
+    curl -sSL https://raw.githubusercontent.com/Amiir-Dark/Monitoriing/main/scripts/nodewatch-agent-install.sh | sudo bash -s -- --token "$TOKEN" --server "$SERVER_URL"
+    exit 0
 fi
 
 cat <<EOF > /etc/systemd/system/nodewatch-agent.service
@@ -257,6 +312,7 @@ After=network.target
 
 [Service]
 Type=simple
+User=root
 ExecStart=/opt/nodewatch/nodewatch-agent -config /etc/nodewatch/agent.json
 Restart=always
 RestartSec=5
@@ -266,8 +322,11 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload || true
-echo "NodeWatch Agent configured successfully!"
+systemctl daemon-reload
+systemctl enable --now nodewatch-agent
+systemctl restart nodewatch-agent || true
+
+echo "✔ NodeWatch Agent installed and actively reporting to $SERVER_URL!"
 `, srvURL)
 
 	w.Header().Set("Content-Type", "text/x-shellscript")
@@ -558,7 +617,8 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --token %q", s.serverURL, rawToken)
+	baseURL := s.getBaseURL(r)
+	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --token %q", baseURL, rawToken)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"node":            node,
@@ -616,7 +676,8 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --token %q", s.serverURL, newToken)
+	baseURL := s.getBaseURL(r)
+	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --token %q", baseURL, newToken)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"token":           newToken,
 		"install_command": installCmd,

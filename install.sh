@@ -41,7 +41,7 @@ INSTALL_DIR="/opt/nodewatch"
 SRC_DIR="/opt/nodewatch/src"
 SERVICE_FILE="/etc/systemd/system/nodewatch.service"
 BIN_LINK="/usr/local/bin/nodewatch"
-DEFAULT_PORT="8080"
+DEFAULT_PORT="8765"
 REPO_DEFAULT="https://github.com/Amiir-Dark/Monitoriing.git"
 
 print_banner() {
@@ -246,14 +246,22 @@ update_nodewatch() {
     (cd "$build_src/backend" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch" ./cmd/nodewatch)
     chmod +x "$INSTALL_DIR/nodewatch"
 
+    # Rebuild agent as well
+    (cd "$build_src/agent" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch-agent" ./cmd/nodewatch-agent)
+    chmod +x "$INSTALL_DIR/nodewatch-agent"
+    mkdir -p "$INSTALL_DIR/downloads"
+    cp "$INSTALL_DIR/nodewatch-agent" "$INSTALL_DIR/downloads/nodewatch-agent"
+    cp "$INSTALL_DIR/nodewatch-agent" "$INSTALL_DIR/downloads/nodewatch-agent-amd64"
+
     if [ -d "$build_src/frontend/dist" ]; then
         echo -e "${CYAN}Updating frontend assets...${NC}"
         rm -rf "$INSTALL_DIR/dist"
         cp -r "$build_src/frontend/dist" "$INSTALL_DIR/dist"
     fi
 
-    echo -e "${CYAN}Restarting service...${NC}"
+    echo -e "${CYAN}Restarting services...${NC}"
     systemctl restart nodewatch
+    systemctl restart nodewatch-agent 2>/dev/null || true
     sleep 1
 
     if systemctl is-active --quiet nodewatch; then
@@ -413,9 +421,10 @@ do_install() {
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$INSTALL_DIR/data"
     mkdir -p "$INSTALL_DIR/data/backups"
+    mkdir -p "$INSTALL_DIR/downloads"
 
-    # Build binary
-    echo -e "\n${CYAN}Compiling NodeWatch central binary...${NC}"
+    # Build binaries
+    echo -e "\n${CYAN}Compiling NodeWatch central server and monitoring agent...${NC}"
     ensure_go
     export GOTOOLCHAIN=local
     export GOPROXY=https://mirror-go.runflare.com,https://goproxy.io,direct
@@ -425,8 +434,17 @@ do_install() {
     if [ -n "$go_ver" ]; then
         sed -i -E "s/go 1\.[0-9]+(\.[0-9]+)?/go ${go_ver}/" "$SOURCE_PATH/backend/go.mod" "$SOURCE_PATH/agent/go.mod" 2>/dev/null || true
     fi
+
+    # Compile central server
     (cd "$SOURCE_PATH/backend" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch" ./cmd/nodewatch)
     chmod +x "$INSTALL_DIR/nodewatch"
+
+    # Compile standalone agent for self-monitoring and remote download distribution
+    (cd "$SOURCE_PATH/agent" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch-agent" ./cmd/nodewatch-agent)
+    chmod +x "$INSTALL_DIR/nodewatch-agent"
+    cp "$INSTALL_DIR/nodewatch-agent" "$INSTALL_DIR/downloads/nodewatch-agent"
+    cp "$INSTALL_DIR/nodewatch-agent" "$INSTALL_DIR/downloads/nodewatch-agent-amd64"
+    ln -sf "$INSTALL_DIR/nodewatch-agent" "/usr/local/bin/nodewatch-agent" 2>/dev/null || true
 
     # Copy frontend dist
     if [ -d "$SOURCE_PATH/frontend/dist" ]; then
@@ -439,14 +457,14 @@ do_install() {
     local secret_key
     secret_key=$(head -c 32 /dev/urandom | base64 2>/dev/null || openssl rand -hex 32 2>/dev/null || echo "nodewatch-super-secret-key-32bytes!")
 
-    # Ask for port
+    # Ask for port (Default: 8765)
     echo -e "\n${BOLD}Configuration:${NC}"
     local user_port
-    user_port=$(read_input "Enter port to run NodeWatch on [Default: 8080]: " "8080")
+    user_port=$(read_input "Enter port to run NodeWatch on [Default: 8765]: " "8765")
     local run_port="${PORT:-$user_port}"
     echo -e "Configured port: ${CYAN}${run_port}${NC}"
 
-    # Create systemd service
+    # Create systemd service for Central Server
     cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=NodeWatch Central Server
@@ -469,11 +487,54 @@ EOF
     chmod +x "$INSTALL_DIR/install.sh"
     ln -sf "$INSTALL_DIR/install.sh" "$BIN_LINK"
 
-    echo -e "${CYAN}Reloading systemd and enabling service...${NC}"
+    echo -e "${CYAN}Reloading systemd and enabling central server service...${NC}"
     systemctl daemon-reload
     systemctl enable nodewatch
     systemctl restart nodewatch
-    sleep 1
+    sleep 2
+
+    # --------------------------------------------------------------------------
+    # Automatically monitor Master Server with local Agent
+    # --------------------------------------------------------------------------
+    echo -e "${CYAN}Setting up real-time self-monitoring for Master Server...${NC}"
+    mkdir -p /etc/nodewatch
+    local master_token=""
+    local node_res
+    node_res=$("$INSTALL_DIR/nodewatch" create-node "Master Server (Local)" -db "$INSTALL_DIR/data/nodewatch.db" 2>/dev/null || true)
+    master_token=$(echo "$node_res" | grep 'NODE_TOKEN=' | cut -d'=' -f2)
+
+    if [ -n "$master_token" ]; then
+        cat <<AGENT_CONF > /etc/nodewatch/agent.json
+{
+  "server_url": "http://127.0.0.1:$run_port",
+  "node_token": "$master_token",
+  "interval": 5
+}
+AGENT_CONF
+        chmod 600 /etc/nodewatch/agent.json
+
+        cat <<AGENT_SVC > /etc/systemd/system/nodewatch-agent.service
+[Unit]
+Description=NodeWatch Monitoring Agent (Master Node)
+After=network.target nodewatch.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=$INSTALL_DIR/nodewatch-agent -config /etc/nodewatch/agent.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+AGENT_SVC
+
+        systemctl daemon-reload
+        systemctl enable nodewatch-agent
+        systemctl restart nodewatch-agent
+        echo -e "${GREEN}✔ Master Server is now monitored out-of-the-box!${NC}"
+    fi
 
     local ip
     ip=$(get_public_ip)

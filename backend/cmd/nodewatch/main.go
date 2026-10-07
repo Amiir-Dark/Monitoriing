@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,11 +52,54 @@ func main() {
 		return
 	}
 
+	// Check for CLI create-node command: `nodewatch create-node [name] [-db path]`
+	if len(os.Args) > 1 && os.Args[1] == "create-node" {
+		dbPath := "./data/nodewatch.db"
+		nodeName := "Master Server (Local)"
+		for i := 2; i < len(os.Args); i++ {
+			if os.Args[i] == "-db" && i+1 < len(os.Args) {
+				dbPath = os.Args[i+1]
+				i++
+			} else if !strings.HasPrefix(os.Args[i], "-") {
+				nodeName = os.Args[i]
+			}
+		}
+
+		db, err := database.Open(dbPath)
+		if err != nil {
+			log.Fatalf("Failed to open database: %v", err)
+		}
+		defer db.Close()
+
+		nodesRepo := nodes.NewRepository(db)
+		// Check if node with this name already exists
+		existingNodes, err := nodesRepo.ListNodes("", "", "", "")
+		if err == nil {
+			for _, n := range existingNodes {
+				if n.Name == nodeName {
+					// Rotate or reuse token
+					tok, regErr := nodesRepo.RotateToken(n.ID)
+					if regErr == nil {
+						fmt.Printf("NODE_ID=%s\nNODE_TOKEN=%s\n", n.ID, tok)
+						return
+					}
+				}
+			}
+		}
+
+		node, token, err := nodesRepo.CreateNode(nodeName, nil, []string{"master", "local"})
+		if err != nil {
+			log.Fatalf("Failed to create node: %v", err)
+		}
+		fmt.Printf("NODE_ID=%s\nNODE_TOKEN=%s\n", node.ID, token)
+		return
+	}
+
 	// Server CLI flags and env fallbacks
-	portFlag := flag.String("port", getEnv("NODEWATCH_PORT", "8080"), "HTTP server port")
+	portFlag := flag.String("port", getEnv("NODEWATCH_PORT", "8765"), "HTTP server port")
 	dbFlag := flag.String("db", getEnv("NODEWATCH_DATABASE", "./data/nodewatch.db"), "Path to SQLite database")
 	secretFlag := flag.String("secret", getEnv("NODEWATCH_SECRET", "nodewatch-super-secret-key-32bytes!"), "JWT auth secret key")
-	serverURLFlag := flag.String("url", getEnv("NODEWATCH_SERVER_URL", "http://localhost:8080"), "Central server public URL")
+	serverURLFlag := flag.String("url", getEnv("NODEWATCH_SERVER_URL", "http://localhost:8765"), "Central server public URL")
 	distFlag := flag.String("dist", getEnv("NODEWATCH_DIST_PATH", "../frontend/dist"), "Path to built frontend files")
 	flag.Parse()
 

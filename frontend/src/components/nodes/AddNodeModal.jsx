@@ -166,33 +166,42 @@ export default function AddNodeModal({ isOpen, onClose, onNodeCreated, groups = 
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-dark-400 mb-1 flex items-center gap-1.5">
-                  <Terminal size={14} /> One-Line Installation Command
-                </label>
-                <div className="relative">
-                  <textarea
-                    readOnly
-                    rows={3}
-                    value={createdData.install_command}
-                    className="w-full font-mono text-xs bg-dark-950 border border-dark-800 rounded-xl p-3 text-dark-200 resize-none select-all focus:outline-none focus:border-brand-500"
-                  />
-                  <button
-                    onClick={() => handleCopy(createdData.install_command)}
-                    className="absolute top-2.5 right-2.5 px-3 py-1.5 bg-dark-800 hover:bg-dark-700 border border-dark-700 text-xs font-medium text-white rounded-lg flex items-center gap-1.5 transition-colors"
-                  >
-                    {copied ? (
-                      <>
-                        <Check size={14} className="text-emerald-400" /> Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={14} /> Copy Command
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
+              {(() => {
+                const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8765';
+                const rawCmd = createdData.install_command || `curl -fsSL ${origin}/install.sh | sudo bash -s -- --token "${createdData.token}"`;
+                const finalCmd = rawCmd.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/gi, origin);
+
+                return (
+                  <div>
+                    <label className="block text-xs font-medium text-dark-400 mb-1 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5"><Terminal size={14} /> One-Line Installation Command</span>
+                      <span className="text-[11px] text-brand-400 font-mono">Target Server: {typeof window !== 'undefined' ? window.location.host : 'localhost:8765'}</span>
+                    </label>
+                    <div className="relative">
+                      <textarea
+                        readOnly
+                        rows={3}
+                        value={finalCmd}
+                        className="w-full font-mono text-xs bg-dark-950 border border-dark-800 rounded-xl p-3 text-dark-200 resize-none select-all focus:outline-none focus:border-brand-500"
+                      />
+                      <button
+                        onClick={() => handleCopy(finalCmd)}
+                        className="absolute top-2.5 right-2.5 px-3 py-1.5 bg-dark-800 hover:bg-dark-700 border border-dark-700 text-xs font-medium text-white rounded-lg flex items-center gap-1.5 transition-colors"
+                      >
+                        {copied ? (
+                          <>
+                            <Check size={14} className="text-emerald-400" /> Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={14} /> Copy Command
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-3 text-xs bg-dark-950 p-3 rounded-xl border border-dark-800 font-mono">
                 <div>
