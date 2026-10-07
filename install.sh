@@ -362,6 +362,8 @@ do_install() {
         SOURCE_PATH="."
     elif [ -d "$SRC_DIR/backend" ]; then
         SOURCE_PATH="$SRC_DIR"
+        echo -e "${CYAN}Syncing latest changes from repository...${NC}"
+        (cd "$SRC_DIR" && git fetch origin main 2>/dev/null && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true)
     else
         echo -e "${CYAN}Cloning NodeWatch source repository...${NC}"
         mkdir -p "$SRC_DIR"
