@@ -355,15 +355,20 @@ do_install() {
     else
         echo -e "${CYAN}Cloning NodeWatch source repository...${NC}"
         mkdir -p "$SRC_DIR"
-        git clone "$REPO_DEFAULT" "$SRC_DIR" 2>/dev/null || {
-            echo -e "${YELLOW}Enter your GitHub repository URL (or press Enter for default):${NC}"
-            read -rp "Repo URL: " custom_repo
-            if [ -n "$custom_repo" ]; then
-                git clone "$custom_repo" "$SRC_DIR"
+        if ! GIT_TERMINAL_PROMPT=0 git clone "$REPO_DEFAULT" "$SRC_DIR" 2>/dev/null; then
+            echo -e "\n${YELLOW}------------------------------------------------------------${NC}"
+            echo -e "${YELLOW}[!] ریپازیتوری شما در گیت‌هاب Private (خصوصی) است یا نیاز به دسترسی دارد.${NC}"
+            echo -e "${CYAN}دو راه برای ادامه دارید:${NC}"
+            echo -e " ۱) ریپازیتوری را در گیت‌هاب Public کنید (Settings -> Make Public)."
+            echo -e " ۲) یا یک توکن GitHub Personal Access Token (PAT) وارد کنید."
+            echo -e "${YELLOW}------------------------------------------------------------${NC}\n"
+            read -rp "Enter GitHub Token (یا اینتر بزنید برای تلاش مجدد): " gh_token
+            if [ -n "$gh_token" ]; then
+                git clone "https://${gh_token}@github.com/Amiir-Dark/Monitoriing.git" "$SRC_DIR"
             else
                 git clone "$REPO_DEFAULT" "$SRC_DIR"
             fi
-        }
+        fi
         SOURCE_PATH="$SRC_DIR"
     fi
 
