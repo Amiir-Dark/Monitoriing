@@ -4,6 +4,7 @@ import { wsService } from '../services/ws';
 import StatCard from '../components/common/StatCard';
 import MetricChart from '../components/charts/MetricChart';
 import AddNodeModal from '../components/nodes/AddNodeModal';
+import { RadialSpeedometer, MiniRadialGauge } from '../components/gauge';
 import {
   formatNetworkSpeed,
   formatPercent,
@@ -406,6 +407,55 @@ export default function Dashboard({ onNavigateToNode, onNavigateToAlerts }) {
         />
       </div>
 
+      {/* 3.5 Gauge UI Cluster Telemetry Cockpit */}
+      <div className="bg-dark-900/90 backdrop-blur-md border border-dark-800 rounded-2xl p-5 shadow-sm space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-dark-800/80">
+          <div className="flex items-center gap-2">
+            <Activity size={18} className="text-cyan-400 animate-pulse" />
+            <h2 className="text-sm font-bold text-white tracking-wide">
+              Cluster Telemetry Cockpit
+            </h2>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-mono">
+              Gauge UI
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-dark-400">
+            Precision needle speedometer & radial arc telemetries
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+          <RadialSpeedometer
+            title="Cluster CPU"
+            value={Number((summary?.avg_cpu || 0).toFixed(1))}
+            subtitle="Fleet Avg"
+            variant="cyan"
+            size={185}
+          />
+          <RadialSpeedometer
+            title="Cluster RAM"
+            value={Number((summary?.avg_memory || 0).toFixed(1))}
+            subtitle="Fleet Avg"
+            variant="emerald"
+            size={185}
+          />
+          <RadialSpeedometer
+            title="Cluster Storage"
+            value={Number((summary?.avg_disk || 0).toFixed(1))}
+            subtitle="Primary Mounts"
+            variant="purple"
+            size={185}
+          />
+          <RadialSpeedometer
+            title="Fleet Health Rate"
+            value={summary?.total_nodes ? Number(((summary.online_nodes / summary.total_nodes) * 100).toFixed(1)) : 100}
+            subtitle={`${summary?.online_nodes || 0} / ${summary?.total_nodes || 0} Online`}
+            variant="emerald"
+            size={185}
+          />
+        </div>
+      </div>
+
       {/* 4. Live Server Fleet Section (The Core Monitoring Matrix) */}
       <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-sm space-y-4">
         {/* Controls Bar */}
@@ -549,67 +599,23 @@ export default function Dashboard({ onNavigateToNode, onNavigateToAlerts }) {
                     )}
                   </div>
 
-                  {/* Live Progress Gauges */}
-                  <div className="space-y-2.5 text-xs">
-                    {/* CPU */}
-                    <div>
-                      <div className="flex justify-between items-center text-[11px] mb-1">
-                        <span className="text-dark-400 flex items-center gap-1">
-                          <Cpu size={12} className="text-brand-400" /> CPU Load
-                        </span>
-                        <span className="font-mono font-bold text-white">
-                          {formatPercent(cpuVal)}
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-dark-900 rounded-full overflow-hidden border border-dark-800/60">
-                        <div
-                          className={`h-full transition-all duration-500 rounded-full ${getGaugeColor(
-                            cpuVal
-                          )}`}
-                          style={{ width: `${Math.min(cpuVal, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* RAM */}
-                    <div>
-                      <div className="flex justify-between items-center text-[11px] mb-1">
-                        <span className="text-dark-400 flex items-center gap-1">
-                          <Layers size={12} className="text-emerald-400" /> Memory
-                        </span>
-                        <span className="font-mono font-bold text-white">
-                          {formatPercent(memVal)}
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-dark-900 rounded-full overflow-hidden border border-dark-800/60">
-                        <div
-                          className={`h-full transition-all duration-500 rounded-full ${getGaugeColor(
-                            memVal
-                          )}`}
-                          style={{ width: `${Math.min(memVal, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Disk */}
-                    <div>
-                      <div className="flex justify-between items-center text-[11px] mb-1">
-                        <span className="text-dark-400 flex items-center gap-1">
-                          <HardDrive size={12} className="text-amber-400" /> Primary Disk
-                        </span>
-                        <span className="font-mono font-bold text-white">
-                          {formatPercent(diskVal)}
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-dark-900 rounded-full overflow-hidden border border-dark-800/60">
-                        <div
-                          className={`h-full transition-all duration-500 rounded-full ${getGaugeColor(
-                            diskVal
-                          )}`}
-                          style={{ width: `${Math.min(diskVal, 100)}%` }}
-                        />
-                      </div>
-                    </div>
+                  {/* Gauge UI Mini Radial Gauges */}
+                  <div className="grid grid-cols-3 gap-2 py-2.5 px-2 bg-dark-900/60 rounded-xl border border-dark-800/80 mb-3 shadow-inner">
+                    <MiniRadialGauge
+                      value={Number(cpuVal.toFixed(1))}
+                      label="CPU"
+                      size={54}
+                    />
+                    <MiniRadialGauge
+                      value={Number(memVal.toFixed(1))}
+                      label="RAM"
+                      size={54}
+                    />
+                    <MiniRadialGauge
+                      value={Number(diskVal.toFixed(1))}
+                      label="DISK"
+                      size={54}
+                    />
                   </div>
 
                   {/* Card Footer: Real-time network speed & Uptime */}

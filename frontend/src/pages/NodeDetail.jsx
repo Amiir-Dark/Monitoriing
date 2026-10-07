@@ -14,6 +14,7 @@ import {
 import { wsService } from '../services/ws';
 import NodeStatusBadge from '../components/common/NodeStatusBadge';
 import MetricChart from '../components/charts/MetricChart';
+import { RadialSpeedometer, MiniRadialGauge } from '../components/gauge';
 import {
   formatPercent,
   formatBytes,
@@ -331,6 +332,65 @@ export default function NodeDetail({ nodeId, onBack }) {
       {/* ========================================================= */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
+          {/* Gauge UI Live Cockpit */}
+          <div className="bg-dark-900/90 backdrop-blur-md border border-dark-800 rounded-2xl p-5 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-dark-800/80">
+              <div className="flex items-center gap-2">
+                <Activity size={18} className="text-cyan-400 animate-pulse" />
+                <h3 className="text-sm font-bold text-white tracking-wide">
+                  Live Cockpit Telemetry
+                </h3>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-mono">
+                  Gauge UI
+                </span>
+              </div>
+              <span className="text-[11px] font-mono text-dark-400">
+                Continuous high-precision instrument dials
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+              <RadialSpeedometer
+                title="CPU Utilization"
+                value={Number((p?.cpu ?? node.latest_metrics?.cpu ?? 0).toFixed(1))}
+                subtitle={`${p?.cpu_count || 1} Cores`}
+                variant="cyan"
+                size={185}
+              />
+              <RadialSpeedometer
+                title="RAM Saturation"
+                value={Number((p?.memory ?? node.latest_metrics?.memory ?? 0).toFixed(1))}
+                subtitle={p?.mem_total_bytes ? formatBytes(p.mem_total_bytes) : 'RAM'}
+                variant="emerald"
+                size={185}
+              />
+              <RadialSpeedometer
+                title="Primary Storage"
+                value={Number((p?.disk ?? node.latest_metrics?.disk ?? 0).toFixed(1))}
+                subtitle={p?.disk_total_bytes ? formatBytes(p.disk_total_bytes) : 'Storage'}
+                variant="purple"
+                size={185}
+              />
+              <RadialSpeedometer
+                title={p?.temperature ? 'System Thermal' : '1m Load Pressure'}
+                value={
+                  p?.temperature
+                    ? Number(p.temperature.toFixed(1))
+                    : Number(
+                        Math.min(
+                          100,
+                          (((p?.load?.load_1 || node.latest_metrics?.load_1 || 0) / (p?.cpu_count || 1)) * 100)
+                        ).toFixed(1)
+                      )
+                }
+                unit={p?.temperature ? '°C' : '%'}
+                subtitle={p?.temperature ? 'Thermal Core' : `Load: ${((p?.load?.load_1 || node.latest_metrics?.load_1 || 0)).toFixed(2)}`}
+                variant="amber"
+                size={185}
+              />
+            </div>
+          </div>
+
           {/* Quick Metrics Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {/* CPU */}
@@ -508,60 +568,75 @@ export default function NodeDetail({ nodeId, onBack }) {
       {/* ========================================================= */}
       {activeTab === 'cpu' && (
         <div className="space-y-6">
-          {/* Hardware CPU Spec Card */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-              <Cpu size={16} className="text-blue-400" /> Processor Hardware Specifications
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs font-mono">
-              <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                <span className="text-dark-500 block text-[10px] uppercase">Model</span>
-                <span className="text-white font-medium">{p?.cpu_model || 'Standard Linux CPU'}</span>
-              </div>
-              <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                <span className="text-dark-500 block text-[10px] uppercase">Cores / Threads</span>
-                <span className="text-white font-medium">{p?.cpu_count || node.architecture || '1'} Cores</span>
-              </div>
-              <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                <span className="text-dark-500 block text-[10px] uppercase">Frequency</span>
-                <span className="text-white font-medium">{p?.cpu_freq_mhz ? `${p.cpu_freq_mhz.toFixed(1)} MHz` : 'Dynamic'}</span>
-              </div>
-              <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                <span className="text-dark-500 block text-[10px] uppercase">Architecture</span>
-                <span className="text-white font-medium">{node.architecture || 'x86_64'}</span>
-              </div>
-            </div>
-
-            {/* Breakdown of CPU states */}
-            {p && (
-              <div className="mt-4 pt-4 border-t border-dark-800/80">
-                <span className="text-[11px] font-semibold text-dark-400 uppercase tracking-wider block mb-2">
-                  Instantaneous OS CPU Time Breakdown
-                </span>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs font-mono">
-                  <div className="bg-dark-950/60 p-2.5 rounded-lg border border-dark-800">
-                    <span className="text-dark-500 text-[10px] block">User Space</span>
-                    <strong className="text-blue-400 text-sm">{p.cpu_user?.toFixed(1) ?? '0.0'}%</strong>
+          {/* Hardware CPU Spec Card & Live Speedometer */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <div className="lg:col-span-2 bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                  <Cpu size={16} className="text-blue-400" /> Processor Hardware Specifications
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
+                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
+                    <span className="text-dark-500 block text-[10px] uppercase">Model</span>
+                    <span className="text-white font-medium truncate block">{p?.cpu_model || 'Standard Linux CPU'}</span>
                   </div>
-                  <div className="bg-dark-950/60 p-2.5 rounded-lg border border-dark-800">
-                    <span className="text-dark-500 text-[10px] block">System Kernel</span>
-                    <strong className="text-purple-400 text-sm">{p.cpu_system?.toFixed(1) ?? '0.0'}%</strong>
+                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
+                    <span className="text-dark-500 block text-[10px] uppercase">Cores / Threads</span>
+                    <span className="text-white font-medium">{p?.cpu_count || node.architecture || '1'} Cores</span>
                   </div>
-                  <div className="bg-dark-950/60 p-2.5 rounded-lg border border-dark-800">
-                    <span className="text-dark-500 text-[10px] block">Idle</span>
-                    <strong className="text-emerald-400 text-sm">{p.cpu_idle?.toFixed(1) ?? '0.0'}%</strong>
+                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
+                    <span className="text-dark-500 block text-[10px] uppercase">Frequency</span>
+                    <span className="text-white font-medium">{p?.cpu_freq_mhz ? `${p.cpu_freq_mhz.toFixed(1)} MHz` : 'Dynamic'}</span>
                   </div>
-                  <div className="bg-dark-950/60 p-2.5 rounded-lg border border-dark-800">
-                    <span className="text-dark-500 text-[10px] block">IO Wait</span>
-                    <strong className="text-amber-400 text-sm">{p.cpu_iowait?.toFixed(1) ?? '0.0'}%</strong>
-                  </div>
-                  <div className="bg-dark-950/60 p-2.5 rounded-lg border border-dark-800">
-                    <span className="text-dark-500 text-[10px] block">Hypervisor Steal</span>
-                    <strong className="text-rose-400 text-sm">{p.cpu_steal?.toFixed(1) ?? '0.0'}%</strong>
+                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
+                    <span className="text-dark-500 block text-[10px] uppercase">Architecture</span>
+                    <span className="text-white font-medium">{node.architecture || 'x86_64'}</span>
                   </div>
                 </div>
               </div>
-            )}
+
+              {/* Breakdown of CPU states */}
+              {p && (
+                <div className="mt-4 pt-4 border-t border-dark-800/80">
+                  <span className="text-[11px] font-semibold text-dark-400 uppercase tracking-wider block mb-2">
+                    Instantaneous OS CPU Time Breakdown
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono">
+                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
+                      <span className="text-dark-500 text-[10px] block">User Space</span>
+                      <strong className="text-blue-400 text-sm">{p.cpu_user?.toFixed(1) ?? '0.0'}%</strong>
+                    </div>
+                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
+                      <span className="text-dark-500 text-[10px] block">System Kernel</span>
+                      <strong className="text-purple-400 text-sm">{p.cpu_system?.toFixed(1) ?? '0.0'}%</strong>
+                    </div>
+                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
+                      <span className="text-dark-500 text-[10px] block">Idle</span>
+                      <strong className="text-emerald-400 text-sm">{p.cpu_idle?.toFixed(1) ?? '0.0'}%</strong>
+                    </div>
+                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
+                      <span className="text-dark-500 text-[10px] block">IO Wait</span>
+                      <strong className="text-amber-400 text-sm">{p.cpu_iowait?.toFixed(1) ?? '0.0'}%</strong>
+                    </div>
+                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
+                      <span className="text-dark-500 text-[10px] block">Hypervisor Steal</span>
+                      <strong className="text-rose-400 text-sm">{p.cpu_steal?.toFixed(1) ?? '0.0'}%</strong>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Real-time CPU Speedometer */}
+            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs flex items-center justify-center">
+              <RadialSpeedometer
+                title="Current CPU Pressure"
+                value={Number((p?.cpu ?? node.latest_metrics?.cpu ?? 0).toFixed(1))}
+                subtitle={`${p?.cpu_count || 1} Total Cores`}
+                variant="cyan"
+                size={210}
+              />
+            </div>
           </div>
 
           {/* Per-Core Matrix */}
@@ -570,22 +645,22 @@ export default function NodeDetail({ nodeId, onBack }) {
               <h3 className="text-sm font-semibold text-white mb-3">Individual Core Utilization</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                 {p.cpu_per_core.map((core) => (
-                  <div key={core.core_index} className="bg-dark-950 border border-dark-800 rounded-xl p-3 font-mono text-xs">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-semibold text-dark-300">Core #{core.core_index}</span>
-                      <span className="font-bold text-white">{core.total.toFixed(1)}%</span>
-                    </div>
-                    {/* Bar */}
-                    <div className="w-full bg-dark-800 h-1.5 rounded-full overflow-hidden mb-2">
-                      <div
-                        className="bg-blue-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(core.total, 100)}%` }}
-                      />
-                    </div>
-                    <div className="text-[10px] text-dark-400 flex justify-between">
-                      <span>Usr: {core.user?.toFixed(1) || '0'}%</span>
-                      <span>Sys: {core.system?.toFixed(1) || '0'}%</span>
-                      <span>Wait: {core.iowait?.toFixed(1) || '0'}%</span>
+                  <div key={core.core_index} className="bg-dark-950 border border-dark-800 rounded-xl p-3 font-mono text-xs flex items-center gap-3">
+                    <MiniRadialGauge
+                      value={Number(core.total.toFixed(1))}
+                      size={48}
+                      strokeWidth={5}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-semibold text-dark-300">Core #{core.core_index}</span>
+                        <span className="font-bold text-white">{core.total.toFixed(1)}%</span>
+                      </div>
+                      <div className="text-[10px] text-dark-400 flex justify-between">
+                        <span>Usr: {core.user?.toFixed(1) || '0'}%</span>
+                        <span>Sys: {core.system?.toFixed(1) || '0'}%</span>
+                        <span>Wait: {core.iowait?.toFixed(1) || '0'}%</span>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -612,6 +687,24 @@ export default function NodeDetail({ nodeId, onBack }) {
       {/* ========================================================= */}
       {activeTab === 'memory' && (
         <div className="space-y-6">
+          {/* Gauge UI Memory Speedometers */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <RadialSpeedometer
+              title="Physical Memory Pressure"
+              value={Number((p?.memory ?? node.latest_metrics?.memory ?? 0).toFixed(1))}
+              subtitle={p?.mem_total_bytes ? `${formatBytes(p.mem_used_bytes)} / ${formatBytes(p.mem_total_bytes)}` : 'RAM'}
+              variant="emerald"
+              size={210}
+            />
+            <RadialSpeedometer
+              title="Swap Space Saturation"
+              value={Number((p?.swap ?? 0).toFixed(1))}
+              subtitle={p?.swap_total_bytes ? `${formatBytes(p.swap_used_bytes)} / ${formatBytes(p.swap_total_bytes)}` : 'No Swap Active'}
+              variant="purple"
+              size={210}
+            />
+          </div>
+
           {/* Detailed Memory Table */}
           <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
             <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
