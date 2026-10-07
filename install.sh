@@ -213,6 +213,13 @@ update_nodewatch() {
 
     echo -e "${CYAN}Rebuilding backend binary...${NC}"
     ensure_go
+    export GOTOOLCHAIN=local
+    export GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+    local go_ver
+    go_ver=$(go version | awk '{print $3}' | sed 's/go//' | cut -d'.' -f1,2)
+    if [ -n "$go_ver" ]; then
+        sed -i -E "s/go 1\.[0-9]+(\.[0-9]+)?/go ${go_ver}/" "$build_src/backend/go.mod" "$build_src/agent/go.mod" 2>/dev/null || true
+    fi
     (cd "$build_src/backend" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch" ./cmd/nodewatch)
     chmod +x "$INSTALL_DIR/nodewatch"
 
@@ -299,6 +306,8 @@ ensure_dependencies() {
 }
 
 ensure_go() {
+    export GOTOOLCHAIN=local
+    export GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
     if command -v go >/dev/null 2>&1; then
         return
     fi
@@ -380,6 +389,13 @@ do_install() {
     # Build binary
     echo -e "\n${CYAN}Compiling NodeWatch central binary...${NC}"
     ensure_go
+    export GOTOOLCHAIN=local
+    export GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+    local go_ver
+    go_ver=$(go version | awk '{print $3}' | sed 's/go//' | cut -d'.' -f1,2)
+    if [ -n "$go_ver" ]; then
+        sed -i -E "s/go 1\.[0-9]+(\.[0-9]+)?/go ${go_ver}/" "$SOURCE_PATH/backend/go.mod" "$SOURCE_PATH/agent/go.mod" 2>/dev/null || true
+    fi
     (cd "$SOURCE_PATH/backend" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/nodewatch" ./cmd/nodewatch)
     chmod +x "$INSTALL_DIR/nodewatch"
 
