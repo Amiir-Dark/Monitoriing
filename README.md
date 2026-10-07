@@ -13,7 +13,7 @@ NodeWatch یک پلتفرم سبک، سریع، امن و حرفه‌ای برا
 روی سرور اصلی لینوکس خود دستور زیر را اجرا کنید:
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/Amiir-Dark/Monitoriing/main/install.sh](https://raw.githubusercontent.com/Amiir-Dark/Monitoriing/refs/heads/main/install.sh) | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Amiir-Dark/Monitoriing/main/install.sh | sudo bash
 ```
 > **نکته:** در صورتی که ریپازیتوری را کلون کرده‌اید، کافیست وارد پوشه پروژه شوید و دستور `sudo bash install.sh` را اجرا کنید.
 
