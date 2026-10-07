@@ -73,7 +73,12 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /downloads/{file}", s.handleDownloadFile)
 	mux.HandleFunc("GET /api/agent/download", s.handleDownloadAgent)
 
-	// Agent ingestion endpoints (Authenticated by node token)
+	// Clean Agent ingestion endpoints (Authenticated by node token)
+	mux.HandleFunc("POST /api/nodes/register", s.handleAgentRegister)
+	mux.HandleFunc("POST /api/nodes/heartbeat", s.handleAgentHeartbeat)
+	mux.HandleFunc("POST /api/telemetry", s.handleAgentMetrics)
+
+	// Legacy agent aliases
 	mux.HandleFunc("POST /api/agent/register", s.handleAgentRegister)
 	mux.HandleFunc("POST /api/agent/heartbeat", s.handleAgentHeartbeat)
 	mux.HandleFunc("POST /api/agent/metrics", s.handleAgentMetrics)
@@ -102,13 +107,18 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("POST /api/nodes/{id}/disable", s.authMiddleware(s.handleDisableNode))
 	mux.HandleFunc("POST /api/nodes/{id}/enable", s.authMiddleware(s.handleEnableNode))
 
-	// Node Metrics & Services
+	// Node Telemetry, Processes, Network, Disks, Services, Docker, Logs
 	mux.HandleFunc("GET /api/nodes/{id}/metrics", s.authMiddleware(s.handleGetNodeMetrics))
+	mux.HandleFunc("GET /api/nodes/{id}/processes", s.authMiddleware(s.handleGetNodeProcesses))
+	mux.HandleFunc("GET /api/nodes/{id}/network", s.authMiddleware(s.handleGetNodeNetwork))
 	mux.HandleFunc("GET /api/nodes/{id}/services", s.authMiddleware(s.handleGetNodeServices))
+	mux.HandleFunc("GET /api/nodes/{id}/docker", s.authMiddleware(s.handleGetNodeDocker))
+	mux.HandleFunc("GET /api/nodes/{id}/logs", s.authMiddleware(s.handleGetNodeLogs))
 	mux.HandleFunc("GET /api/nodes/{id}/alerts", s.authMiddleware(s.handleGetNodeAlerts))
 
 	// Alerts & Rules
 	mux.HandleFunc("GET /api/alerts", s.authMiddleware(s.handleListAlerts))
+	mux.HandleFunc("POST /api/alerts/{id}/ack", s.authMiddleware(s.handleAcknowledgeAlert))
 	mux.HandleFunc("POST /api/alerts/{id}/acknowledge", s.authMiddleware(s.handleAcknowledgeAlert))
 	mux.HandleFunc("POST /api/alerts/{id}/resolve", s.authMiddleware(s.handleResolveAlert))
 	mux.HandleFunc("GET /api/alerts/rules", s.authMiddleware(s.handleListRules))
@@ -372,8 +382,29 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.nodesRepo.UpdateNodeSeen(nodeID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	var hb struct {
+		Timestamp int64   `json:"timestamp"`
+		LatencyMS float64 `json:"latency_ms"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&hb)
+
+	var latencyMS float64
+	if hb.LatencyMS > 0 {
+		latencyMS = hb.LatencyMS
+	} else if hb.Timestamp > 0 {
+		latencyMS = float64(time.Now().UnixMilli() - hb.Timestamp)
+		if latencyMS < 0 || latencyMS > 10000 {
+			latencyMS = 1.0
+		}
+	} else {
+		latencyMS = 1.0
+	}
+
+	_ = s.nodesRepo.RecordHeartbeat(nodeID, latencyMS)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":     "ok",
+		"latency_ms": latencyMS,
+	})
 }
 
 func (s *Server) handleAgentMetrics(w http.ResponseWriter, r *http.Request) {
@@ -529,19 +560,21 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 	var activeNodesCount int
 
 	for _, n := range nodesList {
-		switch n.Status {
-		case "online":
+		switch strings.ToUpper(n.Status) {
+		case "ONLINE":
 			summary.OnlineNodes++
-		case "offline":
-			summary.OfflineNodes++
-		case "warning":
+		case "STALE":
+			summary.StaleNodes++
+		case "DEGRADED", "WARNING":
 			summary.WarningNodes++
+		case "OFFLINE":
+			summary.OfflineNodes++
 		}
 		if n.Disabled {
 			summary.DisabledNodes++
 		}
 
-		if n.LatestMetrics != nil && n.Status == "online" {
+		if n.LatestMetrics != nil && strings.ToUpper(n.Status) == "ONLINE" {
 			totalCPU += n.LatestMetrics.CPU
 			totalMem += n.LatestMetrics.Memory
 			totalDisk += n.LatestMetrics.Disk
@@ -618,7 +651,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	baseURL := s.getBaseURL(r)
-	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --token %q", baseURL, rawToken)
+	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --server %q --token %q", baseURL, baseURL, rawToken)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"node":            node,
@@ -677,7 +710,7 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	baseURL := s.getBaseURL(r)
-	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --token %q", baseURL, newToken)
+	installCmd := fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --server %q --token %q", baseURL, baseURL, newToken)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"token":           newToken,
 		"install_command": installCmd,
@@ -732,6 +765,104 @@ func (s *Server) handleGetNodeServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, svcs)
+}
+
+func (s *Server) handleGetNodeProcesses(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	node, err := s.nodesRepo.GetNode(id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "Node not found")
+		return
+	}
+
+	res := map[string]interface{}{
+		"top_processes": []models.ProcessItem{},
+		"breakdown":     models.ProcessStateBreakdown{},
+	}
+	if node.LatestPayload != nil {
+		if len(node.LatestPayload.TopProcesses) > 0 {
+			res["top_processes"] = node.LatestPayload.TopProcesses
+		}
+		res["breakdown"] = node.LatestPayload.Processes
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleGetNodeNetwork(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	node, err := s.nodesRepo.GetNode(id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "Node not found")
+		return
+	}
+
+	res := map[string]interface{}{
+		"interfaces":          []models.NetworkInterfaceDetail{},
+		"tcp":                 models.TCPStateBreakdown{},
+		"rx_bytes_sec":        0.0,
+		"tx_bytes_sec":        0.0,
+		"rx_packets_sec":      0.0,
+		"tx_packets_sec":      0.0,
+		"rx_drops_sec":        0.0,
+		"tx_drops_sec":        0.0,
+		"rx_errors_sec":       0.0,
+		"tx_errors_sec":       0.0,
+	}
+	if node.LatestPayload != nil {
+		p := node.LatestPayload
+		res["interfaces"] = p.Interfaces
+		res["tcp"] = p.TCP
+		res["rx_bytes_sec"] = p.NetworkRXBytesSec
+		res["tx_bytes_sec"] = p.NetworkTXBytesSec
+		res["rx_packets_sec"] = p.NetworkRXPacketsSec
+		res["tx_packets_sec"] = p.NetworkTXPacketsSec
+		res["rx_drops_sec"] = p.NetworkRXDropsSec
+		res["tx_drops_sec"] = p.NetworkTXDropsSec
+		res["rx_errors_sec"] = p.NetworkRXErrorsSec
+		res["tx_errors_sec"] = p.NetworkTXErrorsSec
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleGetNodeDocker(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	node, err := s.nodesRepo.GetNode(id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "Node not found")
+		return
+	}
+
+	if node.LatestPayload != nil && node.LatestPayload.Docker.Available {
+		writeJSON(w, http.StatusOK, node.LatestPayload.Docker)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, models.DockerReport{
+		Available:  false,
+		Message:    "Docker not detected",
+		Containers: []models.DockerContainer{},
+	})
+}
+
+func (s *Server) handleGetNodeLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+
+	logs, err := s.metricsRepo.GetLogs(id, limit)
+	if err != nil || len(logs) == 0 {
+		node, nErr := s.nodesRepo.GetNode(id)
+		if nErr == nil && node.LatestPayload != nil && len(node.LatestPayload.Logs) > 0 {
+			writeJSON(w, http.StatusOK, node.LatestPayload.Logs)
+			return
+		}
+		writeJSON(w, http.StatusOK, []models.NodeLogEntry{})
+		return
+	}
+	writeJSON(w, http.StatusOK, logs)
 }
 
 func (s *Server) handleGetNodeAlerts(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,10 @@ type ifaceSample struct {
 	txBytes   uint64
 	rxPackets uint64
 	txPackets uint64
+	rxErrors  uint64
+	txErrors  uint64
+	rxDrops   uint64
+	txDrops   uint64
 }
 
 type NetworkCollector struct {
@@ -60,6 +64,9 @@ func (n *NetworkCollector) Collect(p *Payload) (CollectorReport, error) {
 	interfaces := make([]NetworkInterfaceDetail, 0)
 
 	var totalRXRate, totalTXRate float64
+	var totalRXPacketsRate, totalTXPacketsRate float64
+	var totalRXErrorsRate, totalTXErrorsRate float64
+	var totalRXDropsRate, totalTXDropsRate float64
 	var totalRXBytes, totalTXBytes uint64
 
 	for scanner.Scan() {
@@ -91,6 +98,10 @@ func (n *NetworkCollector) Collect(p *Payload) (CollectorReport, error) {
 			txBytes:   txBytes,
 			rxPackets: rxPackets,
 			txPackets: txPackets,
+			rxErrors:  rxErrs,
+			txErrors:  txErrs,
+			rxDrops:   rxDrops,
+			txDrops:   txDrops,
 		}
 		currentSamples[ifName] = curSample
 
@@ -124,7 +135,6 @@ func (n *NetworkCollector) Collect(p *Payload) (CollectorReport, error) {
 
 		// Rate calculation with Counter Reset Protection
 		if prev, ok := n.lastSample[ifName]; ok && elapsedSec > 0.05 {
-			// Counter reset detection (interface down/up, reload, or wrap)
 			if curSample.rxBytes >= prev.rxBytes {
 				ifaceDetail.RXBytesSec = math.Round((float64(curSample.rxBytes-prev.rxBytes)/elapsedSec)*10) / 10
 			}
@@ -137,14 +147,40 @@ func (n *NetworkCollector) Collect(p *Payload) (CollectorReport, error) {
 			if curSample.txPackets >= prev.txPackets {
 				ifaceDetail.TXPacketsSec = math.Round((float64(curSample.txPackets-prev.txPackets)/elapsedSec)*10) / 10
 			}
+			if curSample.rxErrors >= prev.rxErrors {
+				ifaceDetail.RXErrorsSec = math.Round((float64(curSample.rxErrors-prev.rxErrors)/elapsedSec)*10) / 10
+			}
+			if curSample.txErrors >= prev.txErrors {
+				ifaceDetail.TXErrorsSec = math.Round((float64(curSample.txErrors-prev.txErrors)/elapsedSec)*10) / 10
+			}
+			if curSample.rxDrops >= prev.rxDrops {
+				ifaceDetail.RXDropsSec = math.Round((float64(curSample.rxDrops-prev.rxDrops)/elapsedSec)*10) / 10
+			}
+			if curSample.txDrops >= prev.txDrops {
+				ifaceDetail.TXDropsSec = math.Round((float64(curSample.txDrops-prev.txDrops)/elapsedSec)*10) / 10
+			}
+
+			// Packet loss estimate based on drops/errors vs total packets
+			totalPkt := ifaceDetail.RXPacketsSec + ifaceDetail.TXPacketsSec
+			lossPkt := ifaceDetail.RXDropsSec + ifaceDetail.TXDropsSec + ifaceDetail.RXErrorsSec + ifaceDetail.TXErrorsSec
+			if totalPkt+lossPkt > 0 {
+				lossPct := (lossPkt / (totalPkt + lossPkt)) * 100.0
+				ifaceDetail.PacketLossPct = math.Round(lossPct*100) / 100
+			}
 		}
 
 		interfaces = append(interfaces, ifaceDetail)
 
-		// Don't count loopback towards node network throughput
+		// Don't count loopback towards global node network throughput
 		if ifName != "lo" {
 			totalRXRate += ifaceDetail.RXBytesSec
 			totalTXRate += ifaceDetail.TXBytesSec
+			totalRXPacketsRate += ifaceDetail.RXPacketsSec
+			totalTXPacketsRate += ifaceDetail.TXPacketsSec
+			totalRXErrorsRate += ifaceDetail.RXErrorsSec
+			totalTXErrorsRate += ifaceDetail.TXErrorsSec
+			totalRXDropsRate += ifaceDetail.RXDropsSec
+			totalTXDropsRate += ifaceDetail.TXDropsSec
 			totalRXBytes += rxBytes
 			totalTXBytes += txBytes
 		}
@@ -156,6 +192,12 @@ func (n *NetworkCollector) Collect(p *Payload) (CollectorReport, error) {
 	p.Interfaces = interfaces
 	p.NetworkRXBytesSec = totalRXRate
 	p.NetworkTXBytesSec = totalTXRate
+	p.NetworkRXPacketsSec = totalRXPacketsRate
+	p.NetworkTXPacketsSec = totalTXPacketsRate
+	p.NetworkRXErrorsSec = totalRXErrorsRate
+	p.NetworkTXErrorsSec = totalTXErrorsRate
+	p.NetworkRXDropsSec = totalRXDropsRate
+	p.NetworkTXDropsSec = totalTXDropsRate
 	p.TotalRXBytes = totalRXBytes
 	p.TotalTXBytes = totalTXBytes
 

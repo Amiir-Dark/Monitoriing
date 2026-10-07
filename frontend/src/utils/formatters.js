@@ -81,3 +81,76 @@ export function formatDate(timestamp) {
     hour12: false,
   });
 }
+
+export function formatLatency(ms) {
+  if (ms === undefined || ms === null || isNaN(ms)) return 'Unavailable';
+  return `${Number(ms).toFixed(2)} ms`;
+}
+
+export function formatIOPS(iops) {
+  if (iops === undefined || iops === null || isNaN(iops)) return 'Unavailable';
+  return `${formatNumber(Math.round(iops))} IOPS`;
+}
+
+export function formatPacketRate(pkts) {
+  if (pkts === undefined || pkts === null || isNaN(pkts)) return 'Unavailable';
+  return `${formatNumber(Math.round(pkts))} pkts/s`;
+}
+
+export function formatDataFreshness(timestamp) {
+  if (!timestamp) {
+    return {
+      status: 'OFFLINE',
+      text: 'No telemetry reported',
+      isLive: false,
+      isStale: false,
+      isOffline: true,
+      lastKnown: false,
+    };
+  }
+
+  const date = typeof timestamp === 'number' ? new Date(timestamp * 1000) : new Date(timestamp);
+  if (isNaN(date.getTime())) {
+    return {
+      status: 'OFFLINE',
+      text: 'Invalid timestamp',
+      isLive: false,
+      isStale: false,
+      isOffline: true,
+      lastKnown: false,
+    };
+  }
+
+  const diffSec = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+
+  if (diffSec <= 15) {
+    const s = diffSec < 2 ? '1.2s' : `${diffSec}s`;
+    return {
+      status: 'LIVE',
+      text: `Updated ${s} ago`,
+      isLive: true,
+      isStale: false,
+      isOffline: false,
+      lastKnown: false,
+    };
+  } else if (diffSec <= 45) {
+    return {
+      status: 'STALE',
+      text: `Last update: ${diffSec}s ago`,
+      isLive: false,
+      isStale: true,
+      isOffline: false,
+      lastKnown: true,
+    };
+  } else {
+    const ago = timeAgo(timestamp);
+    return {
+      status: 'OFFLINE',
+      text: `Last update: ${ago}`,
+      isLive: false,
+      isStale: false,
+      isOffline: true,
+      lastKnown: true,
+    };
+  }
+}

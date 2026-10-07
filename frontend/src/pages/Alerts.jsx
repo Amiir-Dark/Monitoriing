@@ -17,9 +17,11 @@ import {
   Check,
   ShieldAlert,
   X,
+  ExternalLink,
+  Server,
 } from 'lucide-react';
 
-export default function Alerts() {
+export default function Alerts({ onSelectNode }) {
   const [activeTab, setActiveTab] = useState('active'); // active, rules
   const [alerts, setAlerts] = useState([]);
   const [rules, setRules] = useState([]);
@@ -98,7 +100,7 @@ export default function Alerts() {
         <div>
           <h2 className="text-xl font-bold text-white tracking-tight">Alerts & Engine Rules</h2>
           <p className="text-xs text-dark-400 mt-0.5">
-            Monitor real-time infrastructure incidents and configure automated alert triggers
+            Monitor infrastructure incidents and configure automated kernel metric thresholds
           </p>
         </div>
 
@@ -107,7 +109,7 @@ export default function Alerts() {
             onClick={() => setModalOpen(true)}
             className="flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-semibold shadow-glow-brand transition-all self-start md:self-auto"
           >
-            <Plus size={16} /> New Rule
+            <Plus size={16} /> New Alert Rule
           </button>
         )}
       </div>
@@ -132,7 +134,7 @@ export default function Alerts() {
               : 'border-transparent text-dark-400 hover:text-dark-200'
           }`}
         >
-          <Sliders size={16} /> Configured Rules ({rules.length})
+          <Sliders size={16} /> Configured Threshold Rules ({rules.length})
         </button>
       </div>
 
@@ -140,7 +142,7 @@ export default function Alerts() {
       {activeTab === 'active' && (
         <div className="space-y-4">
           {/* Status filters */}
-          <div className="flex items-center gap-1.5 text-xs">
+          <div className="flex items-center gap-1.5 text-xs font-mono">
             <span className="text-dark-500 mr-1">Filter:</span>
             {['', 'triggered', 'acknowledged', 'resolved'].map((st) => (
               <button
@@ -163,39 +165,105 @@ export default function Alerts() {
             <div className="py-16 bg-dark-900 border border-dark-800 rounded-2xl text-center">
               <CheckCircle2 size={36} className="mx-auto text-emerald-400 mb-2 opacity-80" />
               <h3 className="text-base font-semibold text-white">No incidents found</h3>
-              <p className="text-xs text-dark-400 mt-1">Infrastructure thresholds are operating within nominal range.</p>
+              <p className="text-xs text-dark-400 mt-1 font-mono">
+                All infrastructure telemetry is operating within nominal thresholds.
+              </p>
             </div>
           ) : (
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs divide-y divide-dark-800">
-              {alerts.map((alert) => (
-                <div key={alert.id} className="p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${
-                        alert.severity === 'critical' ? 'bg-rose-500 shadow-glow-rose' : 'bg-amber-500'
-                      }`} />
-                      <h4 className="font-bold text-white text-sm">{alert.rule_name || 'System Alert'}</h4>
-                      <span className="text-dark-500">•</span>
-                      <span className="font-mono text-brand-400">{alert.node_name}</span>
-                      <span className={`ml-2 px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                        alert.status === 'triggered'
-                          ? 'bg-rose-500/20 text-rose-300'
-                          : alert.status === 'acknowledged'
-                          ? 'bg-amber-500/20 text-amber-300'
-                          : 'bg-emerald-500/20 text-emerald-300'
-                      }`}>
-                        {alert.status}
-                      </span>
+            <div className="space-y-3">
+              {alerts.map((alert) => {
+                const isCrit = alert.severity === 'critical';
+                const isWarn = alert.severity === 'warning';
+
+                return (
+                  <div
+                    key={alert.id}
+                    className="p-5 bg-dark-900 border border-dark-800 rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-xs font-mono shadow-xs transition-colors hover:border-dark-700"
+                  >
+                    <div className="space-y-2 flex-1">
+                      {/* Severity & Issue Header */}
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                            isCrit
+                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                              : isWarn
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                          }`}
+                        >
+                          {alert.severity?.toUpperCase() || 'ALERT'}
+                        </span>
+
+                        <span className="text-sm font-bold text-white">
+                          Issue: {alert.rule_name || alert.message || 'Infrastructure Alert'}
+                        </span>
+
+                        <span className="text-dark-500">•</span>
+
+                        <div className="flex items-center gap-1.5 text-brand-400">
+                          <Server size={13} />
+                          <span className="font-semibold">{alert.node_name || 'Server'}</span>
+                        </div>
+
+                        <span
+                          className={`ml-auto lg:ml-2 px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                            alert.status === 'triggered'
+                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              : alert.status === 'acknowledged'
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          }`}
+                        >
+                          {alert.status}
+                        </span>
+                      </div>
+
+                      {/* Message / Description */}
+                      <p className="text-dark-300 font-sans text-xs leading-relaxed">
+                        {alert.message}
+                      </p>
+
+                      {/* Required Metadata: Server, Metric, Current Value, Threshold, Started At, Duration, Last Update */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2 pt-2 border-t border-dark-800/80 text-[11px] text-dark-400">
+                        <div>
+                          <span className="text-dark-500 block text-[10px] uppercase">Metric</span>
+                          <span className="text-dark-200 font-semibold">{alert.metric || 'cpu_usage'}</span>
+                        </div>
+                        <div>
+                          <span className="text-dark-500 block text-[10px] uppercase">Current</span>
+                          <span className="text-white font-bold">{alert.value !== undefined ? `${alert.value}%` : '—'}</span>
+                        </div>
+                        <div>
+                          <span className="text-dark-500 block text-[10px] uppercase">Threshold</span>
+                          <span className="text-dark-200 font-semibold">{alert.threshold !== undefined ? `${alert.threshold}%` : '—'}</span>
+                        </div>
+                        <div>
+                          <span className="text-dark-500 block text-[10px] uppercase">Started At</span>
+                          <span className="text-dark-200">{formatDate(alert.triggered_at)}</span>
+                        </div>
+                        <div>
+                          <span className="text-dark-500 block text-[10px] uppercase">Duration</span>
+                          <span className="text-amber-400 font-semibold">{alert.duration || timeAgo(alert.triggered_at)}</span>
+                        </div>
+                        <div>
+                          <span className="text-dark-500 block text-[10px] uppercase">Last Update</span>
+                          <span className="text-dark-300">{alert.last_update ? timeAgo(alert.last_update) : 'just now'}</span>
+                        </div>
+                      </div>
                     </div>
 
-                    <p className="text-dark-300">{alert.message}</p>
-                    <p className="text-[10px] text-dark-500 font-mono">
-                      Triggered: {formatDate(alert.triggered_at)} ({timeAgo(alert.triggered_at)})
-                    </p>
-                  </div>
+                    {/* Action Buttons: Acknowledge, Resolve, View Server */}
+                    <div className="flex items-center gap-2 self-end lg:self-center shrink-0 pt-2 lg:pt-0">
+                      {onSelectNode && alert.node_id && (
+                        <button
+                          onClick={() => onSelectNode(alert.node_id)}
+                          className="px-3 py-1.5 bg-dark-800 hover:bg-dark-700 text-dark-200 hover:text-white rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors border border-dark-700"
+                        >
+                          <ExternalLink size={13} /> View Server
+                        </button>
+                      )}
 
-                  {alert.status !== 'resolved' && (
-                    <div className="flex items-center gap-2 self-end md:self-center shrink-0">
                       {alert.status === 'triggered' && (
                         <button
                           onClick={() => handleAck(alert.id)}
@@ -204,16 +272,19 @@ export default function Alerts() {
                           <Check size={14} /> Acknowledge
                         </button>
                       )}
-                      <button
-                        onClick={() => handleResolve(alert.id)}
-                        className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors border border-emerald-500/30"
-                      >
-                        <CheckCircle2 size={14} /> Resolve
-                      </button>
+
+                      {alert.status !== 'resolved' && (
+                        <button
+                          onClick={() => handleResolve(alert.id)}
+                          className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors border border-emerald-500/30"
+                        >
+                          <CheckCircle2 size={14} /> Resolve
+                        </button>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -222,25 +293,27 @@ export default function Alerts() {
       {/* RULES TAB */}
       {activeTab === 'rules' && (
         <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs divide-y divide-dark-800">
-          <div className="px-6 py-4 bg-dark-950 border-b border-dark-800 flex items-center justify-between text-xs text-dark-400 font-medium">
-            <span>Configured Rule & Threshold</span>
+          <div className="px-6 py-4 bg-dark-950 border-b border-dark-800 flex items-center justify-between text-xs text-dark-400 font-medium font-mono">
+            <span>Configured Kernel Metric Threshold Rule</span>
             <span>State & Actions</span>
           </div>
 
           {rules.map((rule) => (
-            <div key={rule.id} className="p-4 md:px-6 flex items-center justify-between gap-4 text-xs">
+            <div key={rule.id} className="p-4 md:px-6 flex items-center justify-between gap-4 text-xs font-mono">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${
-                    rule.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
-                  }`} />
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      rule.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
+                    }`}
+                  />
                   <h4 className="font-semibold text-white">{rule.name}</h4>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-dark-950 border border-dark-800 font-mono text-dark-300">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-dark-950 border border-dark-800 text-brand-300">
                     {rule.metric_type} {rule.operator} {rule.threshold}
                   </span>
                 </div>
-                <p className="text-[11px] text-dark-400 mt-1">
-                  Triggers after sustained for {rule.duration_seconds}s • Severity: {rule.severity}
+                <p className="text-[11px] text-dark-400 mt-1 font-sans">
+                  Sustained for {rule.duration_seconds}s before trigger • Severity: {rule.severity}
                 </p>
               </div>
 
@@ -251,14 +324,14 @@ export default function Alerts() {
                     rule.enabled ? 'bg-brand-600 justify-end' : 'bg-dark-800 justify-start'
                   }`}
                 >
-                  <div className="w-4 h-4 bg-white rounded-full shadow-md" />
+                  <div className="w-4 h-4 rounded-full bg-white shadow-xs" />
                 </button>
 
                 <button
                   onClick={() => handleDeleteRule(rule.id)}
-                  className="p-1.5 text-dark-400 hover:text-rose-400 rounded-lg hover:bg-dark-800 transition-colors"
+                  className="p-1.5 text-dark-500 hover:text-rose-400 transition-colors"
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={15} />
                 </button>
               </div>
             </div>
@@ -266,94 +339,112 @@ export default function Alerts() {
         </div>
       )}
 
-      {/* Create Rule Modal */}
+      {/* NEW RULE MODAL */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
           <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-white">Create Alert Rule</h3>
+            <div className="flex items-center justify-between pb-3 border-b border-dark-800">
+              <h3 className="text-base font-bold text-white">Create Metric Alert Trigger</h3>
               <button onClick={() => setModalOpen(false)} className="text-dark-400 hover:text-white">
                 <X size={18} />
               </button>
             </div>
 
-            <form onSubmit={handleSaveNewRule} className="space-y-4 text-xs">
+            <form onSubmit={handleSaveNewRule} className="space-y-4 text-xs font-mono">
               <div>
-                <label className="block font-medium text-dark-300 mb-1">Rule Name</label>
+                <label className="block text-dark-400 mb-1">Rule Name</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Critical RAM Spike"
+                  placeholder="e.g. Critical High RAM"
                   value={ruleName}
                   onChange={(e) => setRuleName(e.target.value)}
-                  className="w-full bg-dark-950 border border-dark-800 rounded-lg p-2.5 text-white"
+                  className="w-full bg-dark-950 border border-dark-800 rounded-xl px-3 py-2 text-white placeholder-dark-600 focus:outline-none focus:border-brand-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-medium text-dark-300 mb-1">Metric Type</label>
+                  <label className="block text-dark-400 mb-1">Metric</label>
                   <select
                     value={metricType}
                     onChange={(e) => setMetricType(e.target.value)}
-                    className="w-full bg-dark-950 border border-dark-800 rounded-lg p-2.5 text-white"
+                    className="w-full bg-dark-950 border border-dark-800 rounded-xl px-3 py-2 text-white focus:outline-none"
                   >
-                    <option value="cpu">CPU (%)</option>
-                    <option value="memory">Memory (%)</option>
-                    <option value="disk">Disk (%)</option>
-                    <option value="load1">System Load 1m</option>
-                    <option value="temperature">Temperature (°C)</option>
+                    <option value="cpu">CPU Usage (%)</option>
+                    <option value="memory">Memory Usage (%)</option>
+                    <option value="disk">Disk Usage (%)</option>
+                    <option value="load1">1m Load Average</option>
+                    <option value="temperature">Core Temp (°C)</option>
+                    <option value="network_drops">Packet Drops/s</option>
+                    <option value="network_errors">Packet Errors/s</option>
                   </select>
                 </div>
+
                 <div>
-                  <label className="block font-medium text-dark-300 mb-1">Threshold</label>
-                  <input
-                    type="number"
-                    step="any"
-                    required
-                    value={threshold}
-                    onChange={(e) => setThreshold(e.target.value)}
-                    className="w-full bg-dark-950 border border-dark-800 rounded-lg p-2.5 text-white"
-                  />
+                  <label className="block text-dark-400 mb-1">Operator & Threshold</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={operator}
+                      onChange={(e) => setOperator(e.target.value)}
+                      className="w-16 bg-dark-950 border border-dark-800 rounded-xl px-2 py-2 text-white focus:outline-none"
+                    >
+                      <option value=">">&gt;</option>
+                      <option value=">=">&gt;=</option>
+                      <option value="<">&lt;</option>
+                    </select>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      value={threshold}
+                      onChange={(e) => setThreshold(e.target.value)}
+                      className="flex-1 bg-dark-950 border border-dark-800 rounded-xl px-3 py-2 text-white focus:outline-none"
+                    />
+                  </div>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-medium text-dark-300 mb-1">Duration (Seconds)</label>
+                  <label className="block text-dark-400 mb-1">Sustained Duration (s)</label>
                   <input
                     type="number"
+                    min="1"
+                    required
                     value={duration}
                     onChange={(e) => setDuration(e.target.value)}
-                    className="w-full bg-dark-950 border border-dark-800 rounded-lg p-2.5 text-white"
+                    className="w-full bg-dark-950 border border-dark-800 rounded-xl px-3 py-2 text-white focus:outline-none"
                   />
                 </div>
+
                 <div>
-                  <label className="block font-medium text-dark-300 mb-1">Severity</label>
+                  <label className="block text-dark-400 mb-1">Severity</label>
                   <select
                     value={severity}
                     onChange={(e) => setSeverity(e.target.value)}
-                    className="w-full bg-dark-950 border border-dark-800 rounded-lg p-2.5 text-white"
+                    className="w-full bg-dark-950 border border-dark-800 rounded-xl px-3 py-2 text-white focus:outline-none"
                   >
-                    <option value="warning">Warning</option>
                     <option value="critical">Critical</option>
+                    <option value="warning">Warning</option>
+                    <option value="info">Info</option>
                   </select>
                 </div>
               </div>
 
-              <div className="pt-2 flex justify-end gap-2">
+              <div className="flex justify-end gap-2 pt-2 border-t border-dark-800">
                 <button
                   type="button"
                   onClick={() => setModalOpen(false)}
-                  className="px-4 py-2 bg-dark-800 text-dark-300 rounded-lg"
+                  className="px-4 py-2 bg-dark-800 text-dark-300 rounded-xl hover:text-white"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-brand-600 text-white rounded-lg font-semibold"
+                  className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl font-semibold shadow-glow-brand"
                 >
-                  Save Rule
+                  Save Trigger Rule
                 </button>
               </div>
             </form>

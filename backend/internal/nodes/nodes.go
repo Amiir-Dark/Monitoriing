@@ -96,14 +96,16 @@ func (r *Repository) GetNode(id string) (*models.Node, error) {
 		       COALESCE(n.operating_system, ''), COALESCE(n.architecture, ''),
 		       COALESCE(n.kernel, ''), COALESCE(n.agent_version, ''),
 		       n.status, n.last_seen, n.created_at, n.updated_at,
-		       n.group_id, g.name, n.disabled, COALESCE(n.latest_payload, '')
+		       n.group_id, g.name, n.disabled, COALESCE(n.latest_payload, ''),
+		       COALESCE(n.heartbeat_interval, 5), COALESCE(n.latency_ms, 0),
+		       n.last_heartbeat, n.last_telemetry_at
 		FROM nodes n
 		LEFT JOIN node_groups g ON n.group_id = g.id
 		WHERE n.id = ?
 	`
 
 	var n models.Node
-	var lastSeen sql.NullInt64
+	var lastSeen, lastHeartbeat, lastTelemetry sql.NullInt64
 	var createdAt, updatedAt int64
 	var groupID, groupName sql.NullString
 	var disabledInt int
@@ -115,6 +117,8 @@ func (r *Repository) GetNode(id string) (*models.Node, error) {
 		&n.Kernel, &n.AgentVersion,
 		&n.Status, &lastSeen, &createdAt, &updatedAt,
 		&groupID, &groupName, &disabledInt, &latestPayloadStr,
+		&n.HeartbeatInterval, &n.LatencyMS,
+		&lastHeartbeat, &lastTelemetry,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -128,6 +132,14 @@ func (r *Repository) GetNode(id string) (*models.Node, error) {
 	if lastSeen.Valid {
 		t := time.Unix(lastSeen.Int64, 0)
 		n.LastSeen = &t
+	}
+	if lastHeartbeat.Valid {
+		t := time.Unix(lastHeartbeat.Int64, 0)
+		n.LastHeartbeat = &t
+	}
+	if lastTelemetry.Valid {
+		t := time.Unix(lastTelemetry.Int64, 0)
+		n.LastTelemetryAt = &t
 	}
 	if groupID.Valid {
 		n.GroupID = &groupID.String
@@ -143,6 +155,8 @@ func (r *Repository) GetNode(id string) (*models.Node, error) {
 			n.LatestPayload = &payload
 		}
 	}
+
+	computeNodeStatus(&n)
 
 	// Fetch tags
 	tags, err := r.GetNodeTags(n.ID)
@@ -166,7 +180,9 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 		       COALESCE(n.operating_system, ''), COALESCE(n.architecture, ''),
 		       COALESCE(n.kernel, ''), COALESCE(n.agent_version, ''),
 		       n.status, n.last_seen, n.created_at, n.updated_at,
-		       n.group_id, g.name, n.disabled, COALESCE(n.latest_payload, '')
+		       n.group_id, g.name, n.disabled, COALESCE(n.latest_payload, ''),
+		       COALESCE(n.heartbeat_interval, 5), COALESCE(n.latency_ms, 0),
+		       n.last_heartbeat, n.last_telemetry_at
 		FROM nodes n
 		LEFT JOIN node_groups g ON n.group_id = g.id
 		LEFT JOIN node_tags t ON n.id = t.node_id
@@ -181,8 +197,8 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 	}
 
 	if status != "" {
-		query += " AND n.status = ?"
-		args = append(args, status)
+		query += " AND (n.status = ? OR n.status = ?)"
+		args = append(args, strings.ToLower(status), strings.ToUpper(status))
 	}
 
 	if groupID != "" {
@@ -206,7 +222,7 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 	list := []*models.Node{}
 	for rows.Next() {
 		var n models.Node
-		var lastSeen sql.NullInt64
+		var lastSeen, lastHeartbeat, lastTelemetry sql.NullInt64
 		var createdAt, updatedAt int64
 		var gID, gName sql.NullString
 		var disabledInt int
@@ -218,6 +234,8 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 			&n.Kernel, &n.AgentVersion,
 			&n.Status, &lastSeen, &createdAt, &updatedAt,
 			&gID, &gName, &disabledInt, &latestPayloadStr,
+			&n.HeartbeatInterval, &n.LatencyMS,
+			&lastHeartbeat, &lastTelemetry,
 		)
 		if err != nil {
 			return nil, err
@@ -228,6 +246,14 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 		if lastSeen.Valid {
 			t := time.Unix(lastSeen.Int64, 0)
 			n.LastSeen = &t
+		}
+		if lastHeartbeat.Valid {
+			t := time.Unix(lastHeartbeat.Int64, 0)
+			n.LastHeartbeat = &t
+		}
+		if lastTelemetry.Valid {
+			t := time.Unix(lastTelemetry.Int64, 0)
+			n.LastTelemetryAt = &t
 		}
 		if gID.Valid {
 			n.GroupID = &gID.String
@@ -244,6 +270,8 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 			}
 		}
 
+		computeNodeStatus(&n)
+
 		// Fetch tags
 		if tags, err := r.GetNodeTags(n.ID); err == nil {
 			n.Tags = tags
@@ -258,6 +286,40 @@ func (r *Repository) ListNodes(search, status, groupID, tag string) ([]*models.N
 	}
 
 	return list, nil
+}
+
+func computeNodeStatus(n *models.Node) {
+	if n.Disabled {
+		n.Status = "disabled"
+		n.ConnectionState = "DISABLED"
+		return
+	}
+	if n.LastSeen == nil {
+		n.Status = "unknown"
+		n.ConnectionState = "UNKNOWN"
+		return
+	}
+
+	diffSec := time.Since(*n.LastSeen).Seconds()
+	if diffSec <= 15 {
+		if n.LatestPayload != nil {
+			for _, col := range n.LatestPayload.Collectors {
+				if col.Status == "error" {
+					n.Status = "warning"
+					n.ConnectionState = "DEGRADED"
+					return
+				}
+			}
+		}
+		n.Status = "online"
+		n.ConnectionState = "ONLINE"
+	} else if diffSec <= 45 {
+		n.Status = "stale"
+		n.ConnectionState = "STALE"
+	} else {
+		n.Status = "offline"
+		n.ConnectionState = "OFFLINE"
+	}
 }
 
 // UpdateNode updates node information.
@@ -500,7 +562,23 @@ func (r *Repository) GetLatestNodeStats(nodeID string) (*models.NodeStats, error
 	return stats, nil
 }
 
-// SaveNodePayload serializes and updates the full latest agent payload and last_seen.
+// RecordHeartbeat logs a heartbeat and updates node state.
+func (r *Repository) RecordHeartbeat(nodeID string, latencyMS float64) error {
+	now := time.Now().Unix()
+	_, _ = r.db.Exec(`
+		INSERT INTO heartbeats (node_id, timestamp, latency_ms)
+		VALUES (?, ?, ?)
+	`, nodeID, now, latencyMS)
+
+	_, err := r.db.Exec(`
+		UPDATE nodes
+		SET last_seen = ?, last_heartbeat = ?, latency_ms = ?, updated_at = ?
+		WHERE id = ? AND disabled = 0
+	`, now, now, latencyMS, now, nodeID)
+	return err
+}
+
+// SaveNodePayload serializes and updates the full latest agent payload and timestamps.
 func (r *Repository) SaveNodePayload(nodeID string, p *models.AgentPayload) error {
 	now := time.Now().Unix()
 	payloadJSON, err := json.Marshal(p)
@@ -509,9 +587,9 @@ func (r *Repository) SaveNodePayload(nodeID string, p *models.AgentPayload) erro
 	}
 	_, err = r.db.Exec(`
 		UPDATE nodes
-		SET latest_payload = ?, status = 'online', last_seen = ?, updated_at = ?
+		SET latest_payload = ?, last_seen = ?, last_telemetry_at = ?, updated_at = ?
 		WHERE id = ? AND disabled = 0
-	`, string(payloadJSON), now, now, nodeID)
+	`, string(payloadJSON), now, now, now, nodeID)
 	return err
 }
 

@@ -87,7 +87,7 @@ function MainApp() {
         <NodeDetail nodeId={selectedNodeId} onBack={handleBackToNodes} />
       )}
 
-      {activeTab === 'alerts' && <Alerts />}
+      {activeTab === 'alerts' && <Alerts onSelectNode={handleSelectNode} />}
 
       {activeTab === 'groups' && (
         <Groups onSelectGroup={() => setActiveTab('nodes')} />

@@ -14,7 +14,7 @@ export default function MetricChart({
   const [hoverIndex, setHoverIndex] = useState(null);
   const containerRef = useRef(null);
 
-  const windows = ['1h', '6h', '24h', '7d', '30d'];
+  const windows = ['1m', '5m', '15m', '1h', '6h', '24h', '7d', '30d'];
 
   // Palette configurations
   const colorMaps = {
@@ -90,6 +90,9 @@ export default function MetricChart({
 
   // Expected max gap before considering missing data (in seconds)
   const maxGapSeconds = {
+    '1m': 5,
+    '5m': 15,
+    '15m': 30,
     '1h': 60,
     '6h': 180,
     '24h': 720,

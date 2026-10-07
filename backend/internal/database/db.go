@@ -213,6 +213,32 @@ func (d *DB) migrate() error {
 		created_at INTEGER NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS heartbeats (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		timestamp INTEGER NOT NULL,
+		latency_ms REAL NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS node_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		timestamp INTEGER NOT NULL,
+		unit TEXT,
+		level TEXT,
+		message TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS alert_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		alert_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		event_type TEXT NOT NULL,
+		value REAL,
+		message TEXT,
+		timestamp INTEGER NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
@@ -228,12 +254,23 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_alerts_status_time ON alerts(status, triggered_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_tokens_hash ON node_tokens(token_hash);
 	CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
+	CREATE INDEX IF NOT EXISTS idx_heartbeats_node_time ON heartbeats(node_id, timestamp DESC);
+	CREATE INDEX IF NOT EXISTS idx_logs_node_time ON node_logs(node_id, timestamp DESC);
 	`
 
 	if _, err := d.Exec(schema); err != nil {
 		return err
 	}
 	_, _ = d.Exec("ALTER TABLE nodes ADD COLUMN latest_payload TEXT;")
+	_, _ = d.Exec("ALTER TABLE nodes ADD COLUMN connection_state TEXT DEFAULT 'unknown';")
+	_, _ = d.Exec("ALTER TABLE nodes ADD COLUMN heartbeat_interval INTEGER DEFAULT 5;")
+	_, _ = d.Exec("ALTER TABLE nodes ADD COLUMN latency_ms REAL DEFAULT 0;")
+	_, _ = d.Exec("ALTER TABLE nodes ADD COLUMN last_heartbeat INTEGER;")
+	_, _ = d.Exec("ALTER TABLE nodes ADD COLUMN last_telemetry_at INTEGER;")
+	_, _ = d.Exec("ALTER TABLE alerts ADD COLUMN rule_name TEXT;")
+	_, _ = d.Exec("ALTER TABLE alerts ADD COLUMN metric TEXT;")
+	_, _ = d.Exec("ALTER TABLE alerts ADD COLUMN threshold REAL DEFAULT 0;")
+	_, _ = d.Exec("ALTER TABLE alerts ADD COLUMN last_update INTEGER;")
 	return nil
 }
 
@@ -275,11 +312,20 @@ func (d *DB) seedDefaults() error {
 			dur      int
 			severity string
 		}{
-			{"CPU High Usage", "cpu", ">", 90.0, 120, "critical"},
-			{"Memory High Usage", "memory", ">", 90.0, 120, "critical"},
-			{"Disk High Usage", "disk", ">", 85.0, 0, "warning"},
-			{"High System Load", "load1", ">", 8.0, 180, "warning"},
+			{"CPU High Usage (Warning)", "cpu", ">", 90.0, 60, "warning"},
+			{"CPU Critical Usage", "cpu", ">", 95.0, 30, "critical"},
+			{"RAM High Usage", "memory", ">", 90.0, 60, "critical"},
+			{"Disk High Usage (Warning)", "disk", ">", 85.0, 0, "warning"},
+			{"Disk Critical Usage", "disk", ">", 95.0, 0, "critical"},
+			{"Swap High Usage", "swap", ">", 80.0, 60, "warning"},
+			{"High System Load", "load1", ">", 8.0, 120, "warning"},
+			{"Load Exceeds CPU Capacity", "load_core", ">", 1.0, 60, "warning"},
+			{"Network Drops Detected", "network_drops", ">", 0.0, 30, "warning"},
+			{"Network Errors Detected", "network_errors", ">", 0.0, 30, "warning"},
+			{"High TCP Retransmission", "tcp_retrans", ">", 5.0, 60, "warning"},
 			{"Node Offline", "offline", "==", 1.0, 30, "critical"},
+			{"System Service Failed", "service_failed", "==", 1.0, 0, "critical"},
+			{"Docker Container Stopped", "docker_stopped", "==", 1.0, 0, "warning"},
 			{"High Temperature", "temperature", ">", 85.0, 60, "warning"},
 		}
 
@@ -297,8 +343,8 @@ func (d *DB) seedDefaults() error {
 
 	// 3. Seed default retention settings
 	settings := map[string]string{
-		"raw_retention_days":     "7",
-		"hourly_retention_days":  "90",
+		"raw_retention_days":      "2",
+		"hourly_retention_days":   "90",
 		"daily_retention_days":    "365",
 		"offline_timeout_seconds": "30",
 	}

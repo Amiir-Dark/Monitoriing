@@ -52,10 +52,15 @@ func (r *Repository) Ingest(nodeID string, p *models.AgentPayload) error {
 		{"disk", p.Disk},
 		{"disk_read", p.DiskReadBytesSec},
 		{"disk_write", p.DiskWriteBytesSec},
+		{"disk_iops", p.DiskIOPS},
+		{"disk_latency", p.DiskLatencyMS},
 		{"network_rx", p.NetworkRXBytesSec},
 		{"network_tx", p.NetworkTXBytesSec},
+		{"network_drops", p.NetworkRXDropsSec + p.NetworkTXDropsSec},
+		{"network_errors", p.NetworkRXErrorsSec + p.NetworkTXErrorsSec},
 		{"processes", float64(p.Processes.Total)},
 		{"tcp_connections", float64(p.TCP.Total)},
+		{"tcp_retrans", p.TCP.RetransRate},
 	}
 
 	if p.Load.Available {
@@ -108,6 +113,20 @@ func (r *Repository) Ingest(nodeID string, p *models.AgentPayload) error {
 		}
 	}
 
+	// Store system logs if present
+	if len(p.Logs) > 0 {
+		logStmt, err := tx.Prepare(`
+			INSERT INTO node_logs (node_id, timestamp, unit, level, message)
+			VALUES (?, ?, ?, ?, ?)
+		`)
+		if err == nil {
+			defer logStmt.Close()
+			for _, l := range p.Logs {
+				_, _ = logStmt.Exec(nodeID, l.Timestamp, l.Unit, l.Level, l.Message)
+			}
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -119,14 +138,30 @@ type MetricPoint struct {
 }
 
 // GetMetricsSeries queries metric series for a node and time window.
-// Time windows: "1h", "6h", "24h", "7d", "30d"
+// Time windows: "1m", "5m", "15m", "1h", "6h", "24h", "7d", "30d"
 func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]MetricPoint, error) {
 	now := time.Now().Unix()
 	var startTime int64
 	useHourly := false
 	useDaily := false
 
+	// Normalize metricType aliases
+	switch metricType {
+	case "load":
+		metricType = "load_1"
+	case "tcp":
+		metricType = "tcp_connections"
+	case "packet_loss", "drops":
+		metricType = "network_drops"
+	}
+
 	switch window {
+	case "1m":
+		startTime = now - 60
+	case "5m":
+		startTime = now - 300
+	case "15m":
+		startTime = now - 900
 	case "1h":
 		startTime = now - 3600
 	case "6h":
@@ -146,7 +181,6 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 	points := []MetricPoint{}
 
 	if useDaily {
-		// Read from metric_daily
 		query := `
 			SELECT timestamp, avg_value, min_value, max_value
 			FROM metric_daily
@@ -155,7 +189,7 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 		`
 		rows, err := r.db.Query(query, nodeID, metricType, startTime)
 		if err != nil {
-			return nil, err
+			return points, err
 		}
 		defer rows.Close()
 
@@ -169,7 +203,6 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 	}
 
 	if useHourly {
-		// Read from metric_hourly
 		query := `
 			SELECT timestamp, avg_value, min_value, max_value
 			FROM metric_hourly
@@ -178,7 +211,7 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 		`
 		rows, err := r.db.Query(query, nodeID, metricType, startTime)
 		if err != nil {
-			return nil, err
+			return points, err
 		}
 		defer rows.Close()
 
@@ -191,7 +224,7 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 		return points, nil
 	}
 
-	// For 1h, 6h, 24h: Read raw metrics, bucket downsample if points > 150
+	// For raw ranges (1m, 5m, 15m, 1h, 6h, 24h)
 	query := `
 		SELECT timestamp, value
 		FROM metrics
@@ -200,7 +233,7 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 	`
 	rows, err := r.db.Query(query, nodeID, metricType, startTime)
 	if err != nil {
-		return nil, err
+		return points, err
 	}
 	defer rows.Close()
 
@@ -212,17 +245,46 @@ func (r *Repository) GetMetricsSeries(nodeID, metricType, window string) ([]Metr
 		}
 	}
 
-	// Downsample to max 120 points for smooth charts
 	if len(rawPoints) <= 120 {
 		return rawPoints, nil
 	}
 
 	step := len(rawPoints) / 120
+	if step < 1 {
+		step = 1
+	}
 	for i := 0; i < len(rawPoints); i += step {
 		points = append(points, rawPoints[i])
 	}
 
 	return points, nil
+}
+
+// GetLogs queries stored node system log entries.
+func (r *Repository) GetLogs(nodeID string, limit int) ([]models.NodeLogEntry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.db.Query(`
+		SELECT timestamp, COALESCE(unit, ''), COALESCE(level, 'info'), COALESCE(message, '')
+		FROM node_logs
+		WHERE node_id = ?
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []models.NodeLogEntry
+	for rows.Next() {
+		var l models.NodeLogEntry
+		if err := rows.Scan(&l.Timestamp, &l.Unit, &l.Level, &l.Message); err == nil {
+			logs = append(logs, l)
+		}
+	}
+	return logs, nil
 }
 
 // GetServices returns the list of monitored services for a node.

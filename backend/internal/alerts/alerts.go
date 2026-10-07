@@ -46,6 +46,11 @@ func (e *Engine) EvaluateMetrics(nodeID, nodeName string, p *models.AgentPayload
 		return
 	}
 
+	cpuCount := p.CPUCount
+	if cpuCount <= 0 {
+		cpuCount = 1
+	}
+
 	for _, rule := range rules {
 		if !rule.Enabled || rule.MetricType == "offline" {
 			continue
@@ -61,18 +66,48 @@ func (e *Engine) EvaluateMetrics(nodeID, nodeName string, p *models.AgentPayload
 			currentVal = p.Memory
 		case "disk":
 			currentVal = p.Disk
+		case "swap":
+			currentVal = p.Swap
 		case "load1":
 			if !p.Load.Available {
 				hasVal = false
 			} else {
 				currentVal = p.Load1
 			}
+		case "load_core":
+			if !p.Load.Available {
+				hasVal = false
+			} else {
+				currentVal = p.Load1 / float64(cpuCount)
+			}
+		case "network_drops":
+			currentVal = p.NetworkRXDropsSec + p.NetworkTXDropsSec
+		case "network_errors":
+			currentVal = p.NetworkRXErrorsSec + p.NetworkTXErrorsSec
+		case "tcp_retrans":
+			currentVal = p.TCP.RetransRate
 		case "temperature":
 			if p.Temperature == nil {
 				hasVal = false
 			} else {
 				currentVal = *p.Temperature
 			}
+		case "service_failed":
+			var failedCount float64
+			for _, s := range p.Services {
+				if s.Status == "FAILED" {
+					failedCount++
+				}
+			}
+			currentVal = failedCount
+		case "docker_stopped":
+			var stoppedCount float64
+			for _, c := range p.Docker.Containers {
+				if c.State == "exited" {
+					stoppedCount++
+				}
+			}
+			currentVal = stoppedCount
 		default:
 			hasVal = false
 		}
@@ -95,8 +130,8 @@ func (e *Engine) EvaluateMetrics(nodeID, nodeName string, p *models.AgentPayload
 
 			// Check duration requirement
 			if time.Since(firstBreach).Seconds() >= float64(rule.DurationSeconds) {
-				msg := fmt.Sprintf("%s on %s is %.1f%% (threshold %.1f%%)", rule.Name, nodeName, currentVal, rule.Threshold)
-				e.triggerAlert(nodeID, nodeName, rule.ID, rule.Name, rule.Severity, msg, currentVal)
+				msg := fmt.Sprintf("%s on %s: value is %.1f (threshold %.1f)", rule.Name, nodeName, currentVal, rule.Threshold)
+				e.triggerAlertWithDetails(nodeID, nodeName, rule.ID, rule.Name, rule.MetricType, rule.Severity, msg, currentVal, rule.Threshold, firstBreach)
 			}
 		} else {
 			delete(e.breachStartTimes, key)
@@ -118,7 +153,7 @@ func (e *Engine) EvaluateOffline(n models.Node) {
 	msg := fmt.Sprintf("🔴 Node Offline\n\nNode: %s\nHostname: %s\nIP: %s\nLast Seen: %s",
 		n.Name, n.Hostname, n.IPAddress, lastSeenStr)
 
-	e.triggerAlert(n.ID, n.Name, "", "Node Offline", "critical", fmt.Sprintf("Node %s has stopped sending heartbeats", n.Name), 1.0)
+	e.triggerAlertWithDetails(n.ID, n.Name, "", "Node Offline", "offline", "critical", fmt.Sprintf("Node %s has stopped sending heartbeats", n.Name), 1.0, 1.0, time.Now())
 	e.telegram.SendAlertNotification("offline:"+n.ID, msg, 5*time.Minute)
 }
 
@@ -128,11 +163,12 @@ func (e *Engine) EvaluateOnline(n models.Node) {
 		n.Name, n.Hostname, n.IPAddress)
 
 	// Resolve offline alerts
+	now := time.Now().Unix()
 	_, _ = e.db.Exec(`
 		UPDATE alerts
 		SET status = 'resolved', resolved_at = ?
 		WHERE node_id = ? AND rule_id IS NULL AND status != 'resolved'
-	`, time.Now().Unix(), n.ID)
+	`, now, n.ID)
 
 	e.telegram.SendAlertNotification("online:"+n.ID, msg, 2*time.Minute)
 	e.hub.BroadcastJSON("alert_resolved", map[string]interface{}{
@@ -159,8 +195,9 @@ func (e *Engine) checkCondition(val float64, op string, threshold float64) bool 
 	}
 }
 
-func (e *Engine) triggerAlert(nodeID, nodeName, ruleID, ruleName, severity, message string, val float64) {
-	now := time.Now().Unix()
+func (e *Engine) triggerAlertWithDetails(nodeID, nodeName, ruleID, ruleName, metric, severity, message string, val, threshold float64, startedAt time.Time) {
+	now := time.Now()
+	nowUnix := now.Unix()
 
 	// Check if already active
 	var existingID string
@@ -180,7 +217,12 @@ func (e *Engine) triggerAlert(nodeID, nodeName, ruleID, ruleName, severity, mess
 	}
 
 	if err == nil && existingID != "" {
-		// Alert already open and active
+		// Update current value and last_update timestamp on existing active alert
+		_, _ = e.db.Exec(`
+			UPDATE alerts
+			SET value = ?, last_update = ?, message = ?
+			WHERE id = ?
+		`, val, nowUnix, message, existingID)
 		return
 	}
 
@@ -191,12 +233,15 @@ func (e *Engine) triggerAlert(nodeID, nodeName, ruleID, ruleName, severity, mess
 	}
 
 	_, err = e.db.Exec(`
-		INSERT INTO alerts (id, node_id, rule_id, status, severity, message, value, triggered_at)
-		VALUES (?, ?, ?, 'triggered', ?, ?, ?, ?)
-	`, alertID, nodeID, ruleIDArg, severity, message, val, now)
+		INSERT INTO alerts (id, node_id, rule_id, rule_name, metric, status, severity, message, value, threshold, triggered_at, last_update)
+		VALUES (?, ?, ?, ?, ?, 'triggered', ?, ?, ?, ?, ?, ?)
+	`, alertID, nodeID, ruleIDArg, ruleName, metric, severity, message, val, threshold, startedAt.Unix(), nowUnix)
 	if err != nil {
 		return
 	}
+
+	durSec := int64(now.Sub(startedAt).Seconds())
+	durStr := formatAlertDuration(durSec)
 
 	alert := models.Alert{
 		ID:          alertID,
@@ -204,20 +249,38 @@ func (e *Engine) triggerAlert(nodeID, nodeName, ruleID, ruleName, severity, mess
 		NodeName:    nodeName,
 		RuleID:      ruleIDArg,
 		RuleName:    ruleName,
+		Metric:      metric,
 		Status:      "triggered",
 		Severity:    severity,
 		Message:     message,
 		Value:       val,
-		TriggeredAt: time.Unix(now, 0),
+		Threshold:   threshold,
+		Duration:    durStr,
+		TriggeredAt: startedAt,
+		LastUpdate:  now,
 	}
 
 	// Real-time broadcast
 	e.hub.BroadcastJSON("alert_triggered", alert)
 
 	// Send telegram alert notification
-	tgMsg := fmt.Sprintf("⚠️ *Alert Triggered: %s*\n\nNode: %s\nSeverity: %s\nMessage: %s",
-		ruleName, nodeName, severity, message)
+	tgMsg := fmt.Sprintf("⚠️ *Alert Triggered: %s*\n\nNode: %s\nSeverity: %s\nValue: %.1f\nThreshold: %.1f\nMessage: %s",
+		ruleName, nodeName, severity, val, threshold, message)
 	e.telegram.SendAlertNotification("alert:"+alertID, tgMsg, 15*time.Minute)
+}
+
+func formatAlertDuration(sec int64) string {
+	if sec < 60 {
+		return fmt.Sprintf("%ds", sec)
+	}
+	m := sec / 60
+	s := sec % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := m / 60
+	m = m % 60
+	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 func (e *Engine) autoResolve(nodeID, ruleID string) {
@@ -245,8 +308,11 @@ func (e *Engine) ListAlerts(status, nodeID string, limit int) ([]models.Alert, e
 
 	query := `
 		SELECT a.id, a.node_id, COALESCE(n.name, 'Unknown'), a.rule_id,
-		       COALESCE(r.name, 'System Alert'), a.status, a.severity,
-		       a.message, a.value, a.triggered_at, a.acknowledged_at, a.resolved_at
+		       COALESCE(a.rule_name, COALESCE(r.name, 'System Alert')),
+		       COALESCE(a.metric, ''), a.status, a.severity,
+		       a.message, a.value, COALESCE(a.threshold, 0),
+		       a.triggered_at, COALESCE(a.last_update, a.triggered_at),
+		       a.acknowledged_at, a.resolved_at
 		FROM alerts a
 		LEFT JOIN nodes n ON a.node_id = n.id
 		LEFT JOIN alert_rules r ON a.rule_id = r.id
@@ -272,17 +338,19 @@ func (e *Engine) ListAlerts(status, nodeID string, limit int) ([]models.Alert, e
 	}
 	defer rows.Close()
 
+	now := time.Now()
 	alerts := []models.Alert{}
 	for rows.Next() {
 		var a models.Alert
 		var ruleID sql.NullString
-		var triggeredAt int64
+		var triggeredAt, lastUpdate int64
 		var ackAt, resAt sql.NullInt64
 
 		err := rows.Scan(
 			&a.ID, &a.NodeID, &a.NodeName, &ruleID,
-			&a.RuleName, &a.Status, &a.Severity,
-			&a.Message, &a.Value, &triggeredAt, &ackAt, &resAt,
+			&a.RuleName, &a.Metric, &a.Status, &a.Severity,
+			&a.Message, &a.Value, &a.Threshold,
+			&triggeredAt, &lastUpdate, &ackAt, &resAt,
 		)
 		if err != nil {
 			return nil, err
@@ -292,6 +360,11 @@ func (e *Engine) ListAlerts(status, nodeID string, limit int) ([]models.Alert, e
 			a.RuleID = &ruleID.String
 		}
 		a.TriggeredAt = time.Unix(triggeredAt, 0)
+		a.LastUpdate = time.Unix(lastUpdate, 0)
+
+		durSec := int64(now.Sub(a.TriggeredAt).Seconds())
+		a.Duration = formatAlertDuration(durSec)
+
 		if ackAt.Valid {
 			t := time.Unix(ackAt.Int64, 0)
 			a.AcknowledgedAt = &t

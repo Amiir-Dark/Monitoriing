@@ -128,13 +128,29 @@ export async function enableNode(id) {
   });
 }
 
-// Metrics & Services
+// Metrics, Processes, Network, Services, Docker, Logs & Alerts
 export async function getNodeMetrics(id, type = 'cpu', window = '1h') {
   return request(`/api/nodes/${id}/metrics?type=${encodeURIComponent(type)}&window=${encodeURIComponent(window)}`);
 }
 
+export async function getNodeProcesses(id) {
+  return request(`/api/nodes/${id}/processes`);
+}
+
+export async function getNodeNetwork(id) {
+  return request(`/api/nodes/${id}/network`);
+}
+
 export async function getNodeServices(id) {
   return request(`/api/nodes/${id}/services`);
+}
+
+export async function getNodeDocker(id) {
+  return request(`/api/nodes/${id}/docker`);
+}
+
+export async function getNodeLogs(id, limit = 100) {
+  return request(`/api/nodes/${id}/logs?limit=${limit}`);
 }
 
 export async function getNodeAlerts(id) {

@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   getNode,
   getNodeMetrics,
+  getNodeProcesses,
+  getNodeNetwork,
   getNodeServices,
+  getNodeDocker,
+  getNodeLogs,
   getNodeAlerts,
   rotateNodeToken,
   disableNode,
@@ -14,16 +18,21 @@ import {
 import { wsService } from '../services/ws';
 import NodeStatusBadge from '../components/common/NodeStatusBadge';
 import MetricChart from '../components/charts/MetricChart';
-import { RadialSpeedometer, MiniRadialGauge } from '../components/gauge';
+import Panel from '../components/common/Panel';
+import Readout from '../components/common/Readout';
+import { RadialSpeedometer, MiniRadialGauge, SegmentBar } from '../components/gauge';
 import {
   formatPercent,
   formatBytes,
   formatNetworkSpeed,
   formatNumber,
-  formatDurationUS,
   formatUptime,
   timeAgo,
   formatDate,
+  formatLatency,
+  formatIOPS,
+  formatPacketRate,
+  formatDataFreshness,
 } from '../utils/formatters';
 import {
   ArrowLeft,
@@ -42,45 +51,76 @@ import {
   Network,
   Clock,
   ShieldAlert,
-  Sliders,
+  Terminal,
   CheckCircle2,
   XCircle,
   HelpCircle,
+  Box,
+  FileText,
+  Search,
+  ArrowDown,
+  ArrowUp,
+  RefreshCw,
+  Gauge,
+  Info,
+  Sliders,
 } from 'lucide-react';
 
 export default function NodeDetail({ nodeId, onBack }) {
   const [node, setNode] = useState(null);
+  const [processesData, setProcessesData] = useState({ top_processes: [], breakdown: {} });
+  const [networkData, setNetworkData] = useState(null);
   const [services, setServices] = useState([]);
+  const [dockerData, setDockerData] = useState({ available: false, message: 'Loading Docker status...', containers: [] });
+  const [logs, setLogs] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [copiedToken, setCopiedToken] = useState(false);
+  const [rotatedTokenData, setRotatedTokenData] = useState(null);
+  const [showInstallModal, setShowInstallModal] = useState(false);
 
-  // Active Tab: overview, cpu, memory, disk, network, diagnostics, services, alerts, install
+  // 10 Tabs: Overview, Metrics, Processes, Network, Disks, Services, Docker, Logs, Alerts, System
   const [activeTab, setActiveTab] = useState('overview');
 
-  // Chart series and time window
+  // Historical Charts State across 8 ranges
   const [chartWindow, setChartWindow] = useState('1h');
+  const [chartsLoading, setChartsLoading] = useState(false);
   const [cpuSeries, setCpuSeries] = useState([]);
   const [memSeries, setMemSeries] = useState([]);
   const [diskSeries, setDiskSeries] = useState([]);
   const [netRxSeries, setNetRxSeries] = useState([]);
   const [netTxSeries, setNetTxSeries] = useState([]);
-  const [chartsLoading, setChartsLoading] = useState(false);
+  const [loadSeries, setLoadSeries] = useState([]);
+  const [tcpSeries, setTcpSeries] = useState([]);
+  const [dropsSeries, setDropsSeries] = useState([]);
+  const [procCountSeries, setProcCountSeries] = useState([]);
 
-  // Rotate token result modal state
-  const [rotatedTokenData, setRotatedTokenData] = useState(null);
-  const [copiedToken, setCopiedToken] = useState(false);
+  // Filters for sub-tabs
+  const [processSearch, setProcessSearch] = useState('');
+  const [processSort, setProcessSort] = useState('cpu'); // cpu, mem, read, write, pid
+  const [serviceFilter, setServiceFilter] = useState('all'); // all, running, stopped, failed
+  const [logLevelFilter, setLogLevelFilter] = useState('all'); // all, error, warning, info
+  const [logSearch, setLogSearch] = useState('');
 
   const loadNodeDetails = async () => {
     try {
-      const [n, s, a] = await Promise.all([
+      const [n, p, net, s, d, l, a] = await Promise.all([
         getNode(nodeId),
-        getNodeServices(nodeId),
-        getNodeAlerts(nodeId),
+        getNodeProcesses(nodeId).catch(() => ({ top_processes: [], breakdown: {} })),
+        getNodeNetwork(nodeId).catch(() => null),
+        getNodeServices(nodeId).catch(() => []),
+        getNodeDocker(nodeId).catch(() => ({ available: false, message: 'Docker not detected', containers: [] })),
+        getNodeLogs(nodeId, 100).catch(() => []),
+        getNodeAlerts(nodeId).catch(() => []),
       ]);
       setNode(n);
-      setServices(s || []);
-      setAlerts(a || []);
+      setProcessesData(p || { top_processes: [], breakdown: {} });
+      setNetworkData(net);
+      setServices(Array.isArray(s) ? s : []);
+      setDockerData(d || { available: false, message: 'Docker not detected', containers: [] });
+      setLogs(Array.isArray(l) ? l : []);
+      setAlerts(Array.isArray(a) ? a : []);
       setError('');
     } catch (err) {
       setError(err.message || 'Failed to fetch node details');
@@ -92,20 +132,28 @@ export default function NodeDetail({ nodeId, onBack }) {
   const loadMetrics = async (window) => {
     setChartsLoading(true);
     try {
-      const [cpu, mem, disk, rx, tx] = await Promise.all([
-        getNodeMetrics(nodeId, 'cpu', window),
-        getNodeMetrics(nodeId, 'memory', window),
-        getNodeMetrics(nodeId, 'disk', window),
-        getNodeMetrics(nodeId, 'network_rx', window),
-        getNodeMetrics(nodeId, 'network_tx', window),
+      const [cpu, mem, disk, rx, tx, ld, tcp, drops, procs] = await Promise.all([
+        getNodeMetrics(nodeId, 'cpu', window).catch(() => []),
+        getNodeMetrics(nodeId, 'memory', window).catch(() => []),
+        getNodeMetrics(nodeId, 'disk', window).catch(() => []),
+        getNodeMetrics(nodeId, 'network_rx', window).catch(() => []),
+        getNodeMetrics(nodeId, 'network_tx', window).catch(() => []),
+        getNodeMetrics(nodeId, 'load1', window).catch(() => []),
+        getNodeMetrics(nodeId, 'tcp_conns', window).catch(() => []),
+        getNodeMetrics(nodeId, 'network_drops', window).catch(() => []),
+        getNodeMetrics(nodeId, 'processes', window).catch(() => []),
       ]);
       setCpuSeries(cpu || []);
       setMemSeries(mem || []);
       setDiskSeries(disk || []);
       setNetRxSeries(rx || []);
       setNetTxSeries(tx || []);
+      setLoadSeries(ld || []);
+      setTcpSeries(tcp || []);
+      setDropsSeries(drops || []);
+      setProcCountSeries(procs || []);
     } catch {
-      // metric load error handled gracefully
+      // metric load errors handled gracefully
     } finally {
       setChartsLoading(false);
     }
@@ -120,7 +168,7 @@ export default function NodeDetail({ nodeId, onBack }) {
     loadMetrics(chartWindow);
   }, [chartWindow]);
 
-  // Real-time live metric ingestion over WebSocket
+  // Live WebSocket Telemetry Stream
   useEffect(() => {
     const unsub = wsService.subscribe('node_metrics', (event) => {
       if (event?.node_id === nodeId && event.metrics) {
@@ -132,14 +180,15 @@ export default function NodeDetail({ nodeId, onBack }) {
           return {
             ...prev,
             status: 'online',
+            connection_state: 'ONLINE',
             last_seen: new Date().toISOString(),
-            latest_payload: m,
+            latest_payload: { ...prev.latest_payload, ...m },
             latest_metrics: {
               ...prev.latest_metrics,
               cpu: m.cpu,
               memory: m.memory,
               disk: m.disk,
-              load1: m.load1 || m.load?.load1,
+              load1: m.load1 ?? m.load?.load1,
               network_rx: m.network_rx,
               network_tx: m.network_tx,
               temperature: m.temperature,
@@ -150,21 +199,43 @@ export default function NodeDetail({ nodeId, onBack }) {
           };
         });
 
-        // Append to 1h real-time chart
-        if (chartWindow === '1h') {
-          setCpuSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.cpu }]);
-          setMemSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.memory }]);
-          setNetRxSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.network_rx }]);
-          setNetTxSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.network_tx }]);
+        // Update real-time 1h buffer without full reload
+        if (chartWindow === '1h' || chartWindow === '1m' || chartWindow === '5m') {
+          if (m.cpu !== undefined) setCpuSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.cpu }]);
+          if (m.memory !== undefined) setMemSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.memory }]);
+          if (m.disk !== undefined) setDiskSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.disk }]);
+          if (m.network_rx !== undefined) setNetRxSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.network_rx }]);
+          if (m.network_tx !== undefined) setNetTxSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.network_tx }]);
+          if (m.load1 !== undefined || m.load?.load1 !== undefined) {
+            setLoadSeries((prev) => [...prev.slice(-119), { timestamp: now, value: m.load1 ?? m.load?.load1 }]);
+          }
         }
 
-        if (m.services && m.services.length > 0) {
+        // Live update services & processes if present in payload
+        if (m.services && Array.isArray(m.services) && m.services.length > 0) {
           setServices(m.services);
+        }
+        if (m.top_processes && Array.isArray(m.top_processes)) {
+          setProcessesData((prev) => ({ ...prev, top_processes: m.top_processes }));
+        }
+        if (m.docker) {
+          setDockerData(m.docker);
         }
       }
     });
 
-    return unsub;
+    const unsubAlert = wsService.subscribe('alert_triggered', (ev) => {
+      if (ev?.node_id === nodeId) loadNodeDetails();
+    });
+    const unsubResolved = wsService.subscribe('alert_resolved', (ev) => {
+      if (ev?.node_id === nodeId) loadNodeDetails();
+    });
+
+    return () => {
+      unsub();
+      unsubAlert();
+      unsubResolved();
+    };
   }, [nodeId, chartWindow]);
 
   const handleRotateToken = async () => {
@@ -214,6 +285,50 @@ export default function NodeDetail({ nodeId, onBack }) {
     loadNodeDetails();
   };
 
+  // Filtered and sorted processes
+  const sortedProcesses = useMemo(() => {
+    const list = processesData?.top_processes || node?.latest_payload?.top_processes || [];
+    const filtered = list.filter((p) => {
+      if (!processSearch) return true;
+      const q = processSearch.toLowerCase();
+      return (
+        p.name?.toLowerCase().includes(q) ||
+        p.command?.toLowerCase().includes(q) ||
+        String(p.pid).includes(q)
+      );
+    });
+
+    return filtered.sort((a, b) => {
+      if (processSort === 'cpu') return (b.cpu_percent || 0) - (a.cpu_percent || 0);
+      if (processSort === 'mem') return (b.memory_bytes || 0) - (a.memory_bytes || 0);
+      if (processSort === 'read') return (b.read_bytes_sec || 0) - (a.read_bytes_sec || 0);
+      if (processSort === 'write') return (b.write_bytes_sec || 0) - (a.write_bytes_sec || 0);
+      if (processSort === 'pid') return a.pid - b.pid;
+      return 0;
+    });
+  }, [processesData, node, processSearch, processSort]);
+
+  // Filtered services
+  const filteredServices = useMemo(() => {
+    return services.filter((s) => {
+      if (serviceFilter === 'all') return true;
+      if (serviceFilter === 'running') return s.status === 'RUNNING';
+      if (serviceFilter === 'stopped') return s.status === 'STOPPED';
+      if (serviceFilter === 'failed') return s.status === 'FAILED';
+      return true;
+    });
+  }, [services, serviceFilter]);
+
+  // Filtered logs
+  const filteredLogs = useMemo(() => {
+    const list = logs.length > 0 ? logs : (node?.latest_payload?.logs || []);
+    return list.filter((l) => {
+      const matchesLevel = logLevelFilter === 'all' || l.level?.toLowerCase() === logLevelFilter.toLowerCase();
+      const matchesQuery = !logSearch || l.message?.toLowerCase().includes(logSearch.toLowerCase()) || l.unit?.toLowerCase().includes(logSearch.toLowerCase());
+      return matchesLevel && matchesQuery;
+    });
+  }, [logs, node, logLevelFilter, logSearch]);
+
   if (loading && !node) {
     return (
       <div className="space-y-6 animate-pulse">
@@ -227,68 +342,107 @@ export default function NodeDetail({ nodeId, onBack }) {
     return (
       <div className="p-8 bg-dark-900 border border-dark-800 rounded-2xl text-center">
         <AlertTriangle className="mx-auto text-rose-400 mb-2" size={32} />
-        <h3 className="text-white font-semibold">Node Not Found</h3>
-        <p className="text-xs text-dark-400 mt-1 mb-4">{error}</p>
+        <h3 className="text-white font-semibold">Node Telemetry Unavailable</h3>
+        <p className="text-xs text-dark-400 mt-1 mb-4 font-mono">{error}</p>
         <button
           onClick={onBack}
-          className="px-4 py-2 bg-dark-800 text-white rounded-lg text-xs"
+          className="px-4 py-2 bg-dark-800 text-white rounded-lg text-xs hover:bg-dark-700"
         >
-          Return to Nodes
+          Return to Dashboard
         </button>
       </div>
     );
   }
 
-  const p = node.latest_payload;
+  const p = node.latest_payload || {};
+  const m = node.latest_metrics || {};
 
+  // Truthful data freshness calculation
+  const nodeTimestamp = p.timestamp || (node.last_seen ? Math.floor(new Date(node.last_seen).getTime() / 1000) : null);
+  const freshness = formatDataFreshness(nodeTimestamp);
+
+  // Exact 10 Tabs requested by specification
   const tabs = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'cpu', label: `CPU (${p?.cpu_count || node.architecture || 'Cores'})` },
-    { id: 'memory', label: 'Memory & Swap' },
-    { id: 'disk', label: `Disks & I/O (${p?.mounts?.length || 0})` },
-    { id: 'network', label: `Network (${p?.interfaces?.length || 0})` },
-    { id: 'diagnostics', label: 'System & Diagnostics' },
-    { id: 'services', label: `Services (${services.length})` },
-    { id: 'alerts', label: `Alerts (${alerts.length})` },
-    { id: 'install', label: 'Agent Command' },
+    { id: 'overview', label: 'Overview', icon: Activity },
+    { id: 'metrics', label: 'Metrics', icon: Activity },
+    { id: 'processes', label: `Processes (${sortedProcesses.length})`, icon: Terminal },
+    { id: 'network', label: `Network (${p.interfaces?.length || 0})`, icon: Network },
+    { id: 'disks', label: `Disks (${p.mounts?.length || 0})`, icon: HardDrive },
+    { id: 'services', label: `Services (${services.length})`, icon: Sliders },
+    { id: 'docker', label: `Docker ${dockerData.available ? `(${dockerData.containers?.length || 0})` : ''}`, icon: Box },
+    { id: 'logs', label: `Logs (${filteredLogs.length})`, icon: FileText },
+    { id: 'alerts', label: `Alerts (${alerts.length})`, icon: ShieldAlert },
+    { id: 'system', label: 'System', icon: Server },
   ];
+
+  // CPU time split segments
+  const cpuSplitSegments = p.cpu_user !== undefined
+    ? [
+        { label: 'User', value: p.cpu_user, color: '#3b82f6', display: `${p.cpu_user.toFixed(1)}%` },
+        { label: 'System', value: p.cpu_system, color: '#06b6d4', display: `${p.cpu_system.toFixed(1)}%` },
+        { label: 'I/O Wait', value: p.cpu_iowait || 0, color: '#f59e0b', display: `${(p.cpu_iowait || 0).toFixed(1)}%` },
+        { label: 'Steal', value: p.cpu_steal || 0, color: '#a855f7', display: `${(p.cpu_steal || 0).toFixed(1)}%` },
+        { label: 'Idle', value: p.cpu_idle, color: '#475569', display: `${p.cpu_idle.toFixed(1)}%` },
+      ]
+    : [];
+
+  // Memory distribution segments
+  const memSegments = p.mem_total_bytes
+    ? [
+        { label: 'Used', value: p.mem_used_bytes, color: '#60a5fa', display: formatBytes(p.mem_used_bytes) },
+        { label: 'Cached', value: p.mem_cached_bytes || 0, color: '#22d3ee', display: formatBytes(p.mem_cached_bytes) },
+        { label: 'Buffers', value: p.mem_buffers_bytes || 0, color: '#a78bfa', display: formatBytes(p.mem_buffers_bytes) },
+        { label: 'Free', value: p.mem_free_bytes || 0, color: '#475569', display: formatBytes(p.mem_free_bytes) },
+      ]
+    : [];
 
   return (
     <div className="space-y-6">
-      {/* Top Header & Breadcrumb */}
+      {/* 1. Server Detail Header: SERVER, IP, OS, STATUS, UPTIME, LAST SEEN */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-dark-900 border border-dark-800 rounded-2xl p-6 shadow-xs">
         <div>
           <button
             onClick={onBack}
             className="flex items-center gap-1.5 text-xs text-dark-400 hover:text-white mb-3 transition-colors"
           >
-            <ArrowLeft size={14} /> Back to Nodes
+            <ArrowLeft size={14} /> Back to Overview
           </button>
 
           <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-xl font-bold text-white tracking-tight">{node.name}</h2>
+            <h2 className="text-xl font-bold text-white tracking-tight">SERVER: {node.name}</h2>
             <NodeStatusBadge status={node.status} disabled={node.disabled} size="lg" />
-            {node.group_name && (
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-dark-800 text-dark-300 font-mono">
-                {node.group_name}
-              </span>
-            )}
+            {/* Freshness Badge */}
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border font-mono ${
+                freshness.isLive
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  : freshness.isStale
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                  : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${freshness.isLive ? 'bg-emerald-400 animate-pulse' : freshness.isStale ? 'bg-amber-400' : 'bg-rose-400'}`} />
+              {freshness.lastKnown ? `LAST KNOWN DATA (${freshness.text})` : freshness.text}
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-dark-400 font-mono mt-2.5">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-dark-400 font-mono mt-3">
             <span>IP: <strong className="text-dark-200">{node.ip_address || 'Unassigned'}</strong></span>
-            <span>Host: <strong className="text-dark-200">{node.hostname || '-'}</strong></span>
-            <span>OS: <strong className="text-dark-200">{node.operating_system || '-'} ({node.architecture || '-'})</strong></span>
-            <span>Kernel: <strong className="text-dark-200">{node.kernel || '-'}</strong></span>
-            <span>Last Seen: <strong className="text-dark-200">{timeAgo(node.last_seen)}</strong></span>
-            {p?.uptime_seconds ? (
-              <span>Uptime: <strong className="text-emerald-400">{formatUptime(p.uptime_seconds)}</strong></span>
-            ) : null}
+            <span>OS: <strong className="text-dark-200">{node.operating_system || node.distribution || 'Linux'}</strong></span>
+            <span>STATUS: <strong className={freshness.isLive ? 'text-emerald-400' : 'text-amber-400'}>{node.connection_state || node.status?.toUpperCase()}</strong></span>
+            <span>UPTIME: <strong className="text-emerald-400">{p.uptime_seconds ? formatUptime(p.uptime_seconds) : m.uptime_seconds ? formatUptime(m.uptime_seconds) : 'Unavailable'}</strong></span>
+            <span>LAST SEEN: <strong className="text-dark-200">{freshness.text}</strong></span>
           </div>
         </div>
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2 self-start lg:self-center">
+          <button
+            onClick={() => setShowInstallModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-semibold shadow-glow-brand transition-all"
+          >
+            <Terminal size={14} /> Agent Command
+          </button>
           <button
             onClick={handleRotateToken}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-dark-800 hover:bg-dark-700 text-dark-200 rounded-xl text-xs font-medium border border-dark-700 transition-colors"
@@ -310,21 +464,26 @@ export default function NodeDetail({ nodeId, onBack }) {
         </div>
       </div>
 
-      {/* Tabs Bar */}
-      <div className="flex border-b border-dark-800 overflow-x-auto gap-2">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-px ${
-              activeTab === t.id
-                ? 'border-brand-500 text-white font-bold'
-                : 'border-transparent text-dark-400 hover:text-dark-200'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* 2. Navigation Tabs (Exact 10 Tabs) */}
+      <div className="flex border-b border-dark-800 overflow-x-auto gap-1">
+        {tabs.map((t) => {
+          const Icon = t.icon;
+          const isActive = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`px-3.5 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-px flex items-center gap-1.5 ${
+                isActive
+                  ? 'border-brand-500 text-white font-bold'
+                  : 'border-transparent text-dark-400 hover:text-dark-200'
+              }`}
+            >
+              <Icon size={14} className={isActive ? 'text-brand-400' : 'text-dark-500'} />
+              <span>{t.label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* ========================================================= */}
@@ -332,785 +491,408 @@ export default function NodeDetail({ nodeId, onBack }) {
       {/* ========================================================= */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
-          {/* Gauge UI Live Cockpit */}
-          <div className="bg-dark-900/90 backdrop-blur-md border border-dark-800 rounded-2xl p-5 shadow-xs space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-dark-800/80">
+          {/* Cockpit Gauges */}
+          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-dark-800/80">
               <div className="flex items-center gap-2">
                 <Activity size={18} className="text-cyan-400 animate-pulse" />
                 <h3 className="text-sm font-bold text-white tracking-wide">
-                  Live Cockpit Telemetry
+                  Real-Time Telemetry Gauges
                 </h3>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-mono">
-                  Gauge UI
-                </span>
               </div>
               <span className="text-[11px] font-mono text-dark-400">
-                Continuous high-precision instrument dials
+                {freshness.text} · Source: {p.collectors ? 'Linux Virtual Filesystem' : 'Node Agent'}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
               <RadialSpeedometer
-                title="CPU Utilization"
-                value={Number((p?.cpu ?? node.latest_metrics?.cpu ?? 0).toFixed(1))}
-                subtitle={`${p?.cpu_count || 1} Cores`}
-                variant="cyan"
-                size={185}
+                value={p.cpu ?? m.cpu ?? null}
+                max={100}
+                unit="%"
+                title="CPU Util"
+                sub={p.cpu_count ? `${p.cpu_count} Cores` : 'Kernel /proc/stat'}
+                tone="blue"
               />
               <RadialSpeedometer
-                title="RAM Saturation"
-                value={Number((p?.memory ?? node.latest_metrics?.memory ?? 0).toFixed(1))}
-                subtitle={p?.mem_total_bytes ? formatBytes(p.mem_total_bytes) : 'RAM'}
-                variant="emerald"
-                size={185}
+                value={p.memory ?? m.memory ?? null}
+                max={100}
+                unit="%"
+                title="RAM Util"
+                sub={p.mem_total_bytes ? formatBytes(p.mem_total_bytes) : 'Exact Bytes'}
+                tone="cyan"
               />
               <RadialSpeedometer
-                title="Primary Storage"
-                value={Number((p?.disk ?? node.latest_metrics?.disk ?? 0).toFixed(1))}
-                subtitle={p?.disk_total_bytes ? formatBytes(p.disk_total_bytes) : 'Storage'}
-                variant="purple"
-                size={185}
+                value={p.disk ?? m.disk ?? null}
+                max={100}
+                unit="%"
+                title="Root Disk"
+                sub={p.disk_total_bytes ? formatBytes(p.disk_total_bytes) : 'Root Filesystem'}
+                tone="purple"
               />
               <RadialSpeedometer
-                title={p?.temperature ? 'System Thermal' : '1m Load Pressure'}
-                value={
-                  p?.temperature
-                    ? Number(p.temperature.toFixed(1))
-                    : Number(
-                        Math.min(
-                          100,
-                          (((p?.load?.load_1 || node.latest_metrics?.load_1 || 0) / (p?.cpu_count || 1)) * 100)
-                        ).toFixed(1)
-                      )
-                }
-                unit={p?.temperature ? '°C' : '%'}
-                subtitle={p?.temperature ? 'Thermal Core' : `Load: ${((p?.load?.load_1 || node.latest_metrics?.load_1 || 0)).toFixed(2)}`}
-                variant="amber"
-                size={185}
+                value={p.network_rx ?? m.network_rx ?? 0}
+                max={Math.max((p.network_rx || 0) * 1.5, 1024 * 1024)}
+                unit="bytes/s"
+                title="Network In"
+                sub="RX Bandwidth"
+                tone="emerald"
+              />
+              <RadialSpeedometer
+                value={p.network_tx ?? m.network_tx ?? 0}
+                max={Math.max((p.network_tx || 0) * 1.5, 1024 * 1024)}
+                unit="bytes/s"
+                title="Network Out"
+                sub="TX Bandwidth"
+                tone="amber"
               />
             </div>
           </div>
 
-          {/* Quick Metrics Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* CPU */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-4.5 shadow-xs">
-              <div className="flex items-center justify-between text-dark-400 mb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                  <Cpu size={14} className="text-blue-400" /> CPU Usage
-                </span>
-                <span className="text-[10px] font-mono text-dark-500">{p?.cpu_count || 1} Cores</span>
-              </div>
-              <p className="text-2xl font-bold text-white mt-1 tabular-nums font-mono">
-                {formatPercent(p?.cpu ?? node.latest_metrics?.cpu)}
+          {/* Quick Metrics Readout */}
+          <Panel title="Kernel Telemetry Overview" meta="Direct kernel telemetries">
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-x-6 gap-y-3">
+              <Readout
+                label="1m / 5m / 15m Load"
+                icon={Gauge}
+                value={p.load ? `${p.load.load1.toFixed(2)} · ${p.load.load5.toFixed(2)}` : (m.load1 !== undefined ? m.load1.toFixed(2) : 'Unavailable')}
+                sub={p.load ? `15m: ${p.load.load15.toFixed(2)}` : 'Load averages'}
+                tone="text-white"
+              />
+              <Readout
+                label="CPU Frequency"
+                icon={Cpu}
+                value={p.cpu_freq_mhz ? `${(p.cpu_freq_mhz / 1000).toFixed(2)} GHz` : (node.cpu_freq_mhz ? `${(node.cpu_freq_mhz / 1000).toFixed(2)} GHz` : 'Unavailable')}
+                sub={p.cpu_count ? `${p.cpu_count} logical cores` : 'Hardware frequency'}
+                tone="text-blue-400"
+              />
+              <Readout
+                label="Core Temp"
+                icon={Thermometer}
+                value={p.temperature !== null && p.temperature !== undefined ? `${p.temperature.toFixed(1)}°C` : 'Unavailable'}
+                sub={p.temperature ? 'Thermal zone 0' : 'No hardware sensor'}
+                tone="text-amber-400"
+              />
+              <Readout
+                label="Disk I/O"
+                icon={HardDrive}
+                value={p.disk_read_bytes_sec !== undefined ? `${formatNetworkSpeed(p.disk_read_bytes_sec)} R` : 'Unavailable'}
+                sub={p.disk_write_bytes_sec !== undefined ? `${formatNetworkSpeed(p.disk_write_bytes_sec)} W` : 'Throughput'}
+                tone="text-purple-400"
+              />
+              <Readout
+                label="TCP Sockets"
+                icon={Network}
+                value={p.tcp?.total !== undefined ? `${p.tcp.total} total` : 'Unavailable'}
+                sub={p.tcp?.established !== undefined ? `${p.tcp.established} established` : 'Socket stats'}
+                tone="text-emerald-400"
+              />
+              <Readout
+                label="Active Alerts"
+                icon={ShieldAlert}
+                value={alerts.filter((a) => a.status === 'triggered').length}
+                sub="Triggered on this node"
+                tone={alerts.some((a) => a.status === 'triggered') ? 'text-rose-400' : 'text-emerald-400'}
+              />
+            </div>
+          </Panel>
+
+          {/* Allocation Breakdown */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Panel title="CPU Time Split (/proc/stat)">
+              <SegmentBar
+                segments={cpuSplitSegments}
+                unavailableText="CPU split telemetry unavailable"
+              />
+            </Panel>
+            <Panel title="Memory Allocation (/proc/meminfo)">
+              <SegmentBar
+                segments={memSegments}
+                unavailableText="Memory telemetry unavailable"
+              />
+            </Panel>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* TAB 2: METRICS (HISTORICAL TELEMETRY) */}
+      {/* ========================================================= */}
+      {activeTab === 'metrics' && (
+        <div className="space-y-6">
+          {/* Time Window Selector (All 8 ranges supported) */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-dark-900 border border-dark-800 rounded-2xl">
+            <div>
+              <h3 className="text-sm font-bold text-white">Historical Telemetry Engine</h3>
+              <p className="text-xs text-dark-400 font-mono mt-0.5">
+                Stored samples and downsampled telemetry. Never fabricated or estimated.
               </p>
-              <div className="mt-2 text-[11px] font-mono text-dark-400 flex items-center justify-between">
-                <span>User: <strong className="text-dark-200">{p?.cpu_user !== undefined ? `${p.cpu_user}%` : '-'}</strong></span>
-                <span>Sys: <strong className="text-dark-200">{p?.cpu_system !== undefined ? `${p.cpu_system}%` : '-'}</strong></span>
-                <span>Wait: <strong className="text-dark-200">{p?.cpu_iowait !== undefined ? `${p.cpu_iowait}%` : '-'}</strong></span>
-              </div>
             </div>
 
-            {/* RAM */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-4.5 shadow-xs">
-              <div className="flex items-center justify-between text-dark-400 mb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                  <Layers size={14} className="text-emerald-400" /> RAM Usage
-                </span>
-                <span className="text-[10px] font-mono text-dark-500">
-                  {p?.mem_total_bytes ? formatBytes(p.mem_total_bytes) : '-'}
-                </span>
-              </div>
-              <p className="text-2xl font-bold text-white mt-1 tabular-nums font-mono">
-                {formatPercent(p?.memory ?? node.latest_metrics?.memory)}
-              </p>
-              <div className="mt-2 text-[11px] font-mono text-dark-400 flex items-center justify-between">
-                <span>Used: <strong className="text-dark-200">{p?.mem_used_bytes ? formatBytes(p.mem_used_bytes) : '-'}</strong></span>
-                <span>Avail: <strong className="text-dark-200">{p?.mem_avail_bytes ? formatBytes(p.mem_avail_bytes) : '-'}</strong></span>
-              </div>
-            </div>
-
-            {/* Root Disk */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-4.5 shadow-xs">
-              <div className="flex items-center justify-between text-dark-400 mb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                  <HardDrive size={14} className="text-purple-400" /> Root Disk (/)
-                </span>
-                <span className="text-[10px] font-mono text-dark-500">
-                  {p?.disk_total_bytes ? formatBytes(p.disk_total_bytes) : '-'}
-                </span>
-              </div>
-              <p className="text-2xl font-bold text-white mt-1 tabular-nums font-mono">
-                {formatPercent(p?.disk ?? node.latest_metrics?.disk)}
-              </p>
-              <div className="mt-2 text-[11px] font-mono text-dark-400 flex items-center justify-between">
-                <span>Used: <strong className="text-dark-200">{p?.disk_used_bytes ? formatBytes(p.disk_used_bytes) : '-'}</strong></span>
-                <span>Mounts: <strong className="text-dark-200">{p?.mounts?.length || 1}</strong></span>
-              </div>
-            </div>
-
-            {/* Network */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-4.5 shadow-xs">
-              <div className="flex items-center justify-between text-dark-400 mb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                  <Activity size={14} className="text-amber-400" /> Network Rate
-                </span>
-                <span className="text-[10px] font-mono text-dark-500">
-                  {p?.interfaces?.length || 1} Ifaces
-                </span>
-              </div>
-              <p className="text-xl font-bold text-white mt-1 font-mono tabular-nums truncate">
-                ↓ {formatNetworkSpeed(p?.network_rx ?? node.latest_metrics?.network_rx)}
-              </p>
-              <div className="mt-2 text-[11px] font-mono text-dark-400 flex items-center justify-between">
-                <span>TX: <strong className="text-dark-200 font-mono">↑ {formatNetworkSpeed(p?.network_tx ?? node.latest_metrics?.network_tx)}</strong></span>
-              </div>
+            <div className="flex items-center gap-1 bg-dark-950 p-1 rounded-xl border border-dark-800 overflow-x-auto">
+              {['1m', '5m', '15m', '1h', '6h', '24h', '7d', '30d'].map((w) => (
+                <button
+                  key={w}
+                  onClick={() => setChartWindow(w)}
+                  className={`px-2.5 py-1 text-xs font-mono font-medium rounded-lg transition-colors ${
+                    chartWindow === w
+                      ? 'bg-brand-600 text-white font-bold'
+                      : 'text-dark-400 hover:text-white'
+                  }`}
+                >
+                  {w}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Load, Thermal, TCP, Process Summary Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {/* Load Avg */}
-            <div className="bg-dark-900 border border-dark-800 rounded-xl p-4">
-              <span className="text-[11px] text-dark-400 font-medium uppercase">Load Average</span>
-              {p?.load?.available === false ? (
-                <div className="mt-2">
-                  <span className="px-2 py-0.5 rounded bg-dark-800 text-dark-400 text-xs font-mono">Unavailable</span>
-                  <p className="text-[10px] text-dark-500 mt-1">Non-Linux or not available</p>
-                </div>
-              ) : (
-                <div className="mt-1">
-                  <div className="text-lg font-bold text-white font-mono">
-                    {(p?.load1 ?? p?.load?.load1 ?? 0).toFixed(2)}
-                  </div>
-                  <p className="text-[10px] font-mono text-dark-400 mt-0.5">
-                    5m: {(p?.load5 ?? p?.load?.load5 ?? 0).toFixed(2)} | 15m: {(p?.load15 ?? p?.load?.load15 ?? 0).toFixed(2)}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Temperature */}
-            <div className="bg-dark-900 border border-dark-800 rounded-xl p-4">
-              <span className="text-[11px] text-dark-400 font-medium uppercase flex items-center gap-1">
-                <Thermometer size={13} /> Temperature
-              </span>
-              {p?.temperature !== undefined && p?.temperature !== null ? (
-                <div className="mt-1">
-                  <div className="text-lg font-bold text-white font-mono">
-                    {p.temperature.toFixed(1)}°C
-                  </div>
-                  <p className="text-[10px] text-emerald-400 mt-0.5">
-                    {p.thermal_sensors?.length || 1} sensor(s) reading
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-2">
-                  <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs font-mono">
-                    Unavailable
-                  </span>
-                  <p className="text-[10px] text-dark-500 mt-1" title="No thermal hardware in VMs/containers">
-                    Virtual environment
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Processes */}
-            <div className="bg-dark-900 border border-dark-800 rounded-xl p-4">
-              <span className="text-[11px] text-dark-400 font-medium uppercase">Processes</span>
-              <div className="mt-1">
-                <div className="text-lg font-bold text-white font-mono">
-                  {p?.processes?.total ? formatNumber(p.processes.total) : 'Unavailable'}
-                </div>
-                <p className="text-[10px] font-mono text-dark-400 mt-0.5">
-                  Running: <strong className="text-emerald-400">{p?.processes?.running ?? 0}</strong> | Zombie: <strong className="text-rose-400">{p?.processes?.zombie ?? 0}</strong>
-                </p>
-              </div>
-            </div>
-
-            {/* TCP Sockets */}
-            <div className="bg-dark-900 border border-dark-800 rounded-xl p-4">
-              <span className="text-[11px] text-dark-400 font-medium uppercase">TCP Sockets</span>
-              <div className="mt-1">
-                <div className="text-lg font-bold text-white font-mono">
-                  {p?.tcp?.total ? formatNumber(p.tcp.total) : 'Unavailable'}
-                </div>
-                <p className="text-[10px] font-mono text-dark-400 mt-0.5">
-                  Est: <strong className="text-blue-400">{p?.tcp?.established ?? 0}</strong> | Listen: <strong className="text-purple-400">{p?.tcp?.listen ?? 0}</strong>
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Mini CPU & Memory charts */}
+          {/* 9 Major Historical Charts */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <MetricChart
-              title="CPU Usage (Real-time)"
+              title="CPU Utilization"
               data={cpuSeries}
               unit="%"
               color="blue"
               loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={200}
             />
             <MetricChart
-              title="Memory Usage (Real-time)"
+              title="Memory Utilization"
               data={memSeries}
               unit="%"
-              color="emerald"
+              color="cyan"
               loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={200}
             />
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* TAB 2: CPU */}
-      {/* ========================================================= */}
-      {activeTab === 'cpu' && (
-        <div className="space-y-6">
-          {/* Hardware CPU Spec Card & Live Speedometer */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <div className="lg:col-span-2 bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-                  <Cpu size={16} className="text-blue-400" /> Processor Hardware Specifications
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
-                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                    <span className="text-dark-500 block text-[10px] uppercase">Model</span>
-                    <span className="text-white font-medium truncate block">{p?.cpu_model || 'Standard Linux CPU'}</span>
-                  </div>
-                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                    <span className="text-dark-500 block text-[10px] uppercase">Cores / Threads</span>
-                    <span className="text-white font-medium">{p?.cpu_count || node.architecture || '1'} Cores</span>
-                  </div>
-                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                    <span className="text-dark-500 block text-[10px] uppercase">Frequency</span>
-                    <span className="text-white font-medium">{p?.cpu_freq_mhz ? `${p.cpu_freq_mhz.toFixed(1)} MHz` : 'Dynamic'}</span>
-                  </div>
-                  <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                    <span className="text-dark-500 block text-[10px] uppercase">Architecture</span>
-                    <span className="text-white font-medium">{node.architecture || 'x86_64'}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Breakdown of CPU states */}
-              {p && (
-                <div className="mt-4 pt-4 border-t border-dark-800/80">
-                  <span className="text-[11px] font-semibold text-dark-400 uppercase tracking-wider block mb-2">
-                    Instantaneous OS CPU Time Breakdown
-                  </span>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono">
-                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
-                      <span className="text-dark-500 text-[10px] block">User Space</span>
-                      <strong className="text-blue-400 text-sm">{p.cpu_user?.toFixed(1) ?? '0.0'}%</strong>
-                    </div>
-                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
-                      <span className="text-dark-500 text-[10px] block">System Kernel</span>
-                      <strong className="text-purple-400 text-sm">{p.cpu_system?.toFixed(1) ?? '0.0'}%</strong>
-                    </div>
-                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
-                      <span className="text-dark-500 text-[10px] block">Idle</span>
-                      <strong className="text-emerald-400 text-sm">{p.cpu_idle?.toFixed(1) ?? '0.0'}%</strong>
-                    </div>
-                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
-                      <span className="text-dark-500 text-[10px] block">IO Wait</span>
-                      <strong className="text-amber-400 text-sm">{p.cpu_iowait?.toFixed(1) ?? '0.0'}%</strong>
-                    </div>
-                    <div className="bg-dark-950/60 p-2 rounded-lg border border-dark-800">
-                      <span className="text-dark-500 text-[10px] block">Hypervisor Steal</span>
-                      <strong className="text-rose-400 text-sm">{p.cpu_steal?.toFixed(1) ?? '0.0'}%</strong>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Real-time CPU Speedometer */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs flex items-center justify-center">
-              <RadialSpeedometer
-                title="Current CPU Pressure"
-                value={Number((p?.cpu ?? node.latest_metrics?.cpu ?? 0).toFixed(1))}
-                subtitle={`${p?.cpu_count || 1} Total Cores`}
-                variant="cyan"
-                size={210}
-              />
-            </div>
-          </div>
-
-          {/* Per-Core Matrix */}
-          {p?.cpu_per_core && p.cpu_per_core.length > 0 && (
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-              <h3 className="text-sm font-semibold text-white mb-3">Individual Core Utilization</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {p.cpu_per_core.map((core) => (
-                  <div key={core.core_index} className="bg-dark-950 border border-dark-800 rounded-xl p-3 font-mono text-xs flex items-center gap-3">
-                    <MiniRadialGauge
-                      value={Number(core.total.toFixed(1))}
-                      size={48}
-                      strokeWidth={5}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold text-dark-300">Core #{core.core_index}</span>
-                        <span className="font-bold text-white">{core.total.toFixed(1)}%</span>
-                      </div>
-                      <div className="text-[10px] text-dark-400 flex justify-between">
-                        <span>Usr: {core.user?.toFixed(1) || '0'}%</span>
-                        <span>Sys: {core.system?.toFixed(1) || '0'}%</span>
-                        <span>Wait: {core.iowait?.toFixed(1) || '0'}%</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Historical Chart */}
-          <MetricChart
-            title="CPU Usage History"
-            data={cpuSeries}
-            unit="%"
-            color="blue"
-            activeWindow={chartWindow}
-            onWindowChange={setChartWindow}
-            loading={chartsLoading}
-            height={260}
-          />
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* TAB 3: MEMORY & SWAP */}
-      {/* ========================================================= */}
-      {activeTab === 'memory' && (
-        <div className="space-y-6">
-          {/* Gauge UI Memory Speedometers */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <RadialSpeedometer
-              title="Physical Memory Pressure"
-              value={Number((p?.memory ?? node.latest_metrics?.memory ?? 0).toFixed(1))}
-              subtitle={p?.mem_total_bytes ? `${formatBytes(p.mem_used_bytes)} / ${formatBytes(p.mem_total_bytes)}` : 'RAM'}
-              variant="emerald"
-              size={210}
-            />
-            <RadialSpeedometer
-              title="Swap Space Saturation"
-              value={Number((p?.swap ?? 0).toFixed(1))}
-              subtitle={p?.swap_total_bytes ? `${formatBytes(p.swap_used_bytes)} / ${formatBytes(p.swap_total_bytes)}` : 'No Swap Active'}
-              variant="purple"
-              size={210}
-            />
-          </div>
-
-          {/* Detailed Memory Table */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-              <Layers size={16} className="text-emerald-400" /> Physical RAM & Swap Breakdown
-            </h3>
-
-            {/* Visual RAM & Swap Bars */}
-            <div className="space-y-4 mb-6">
-              <div>
-                <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-dark-300">Physical Memory (RAM)</span>
-                  <span className="text-white font-bold">
-                    {formatBytes(p?.mem_used_bytes)} / {formatBytes(p?.mem_total_bytes)} ({formatPercent(p?.memory)})
-                  </span>
-                </div>
-                <div className="w-full bg-dark-950 h-3 rounded-full overflow-hidden border border-dark-800 flex">
-                  <div
-                    className="bg-emerald-500 h-full"
-                    style={{ width: `${Math.min(p?.memory || 0, 100)}%` }}
-                    title="Used Memory"
-                  />
-                  <div
-                    className="bg-blue-500/50 h-full"
-                    style={{ width: `${p?.mem_total_bytes ? Math.min(((p?.mem_buffers_bytes || 0) + (p?.mem_cached_bytes || 0)) / p.mem_total_bytes * 100, 100) : 0}%` }}
-                    title="Buffers & Cached"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-dark-300">Swap Space</span>
-                  <span className="text-white font-bold">
-                    {p?.swap_total_bytes ? `${formatBytes(p.swap_used_bytes)} / ${formatBytes(p.swap_total_bytes)} (${formatPercent(p.swap)})` : 'None Configured'}
-                  </span>
-                </div>
-                <div className="w-full bg-dark-950 h-3 rounded-full overflow-hidden border border-dark-800">
-                  <div
-                    className="bg-purple-500 h-full"
-                    style={{ width: `${Math.min(p?.swap || 0, 100)}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Exact Bytes Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs font-mono">
-                <thead>
-                  <tr className="border-b border-dark-800 text-dark-500 text-[10px] uppercase">
-                    <th className="pb-2">Metric</th>
-                    <th className="pb-2">Human Readable</th>
-                    <th className="pb-2">Exact Bytes</th>
-                    <th className="pb-2">% of Total</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-dark-800/60 text-dark-300">
-                  <tr>
-                    <td className="py-2.5 text-white font-semibold">Total Memory</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_total_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.mem_total_bytes)} B</td>
-                    <td className="py-2.5">100.0%</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 text-rose-400">Used Memory</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_used_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.mem_used_bytes)} B</td>
-                    <td className="py-2.5">{formatPercent(p?.memory)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 text-emerald-400">Available Memory</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_avail_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.mem_avail_bytes)} B</td>
-                    <td className="py-2.5">{p?.mem_total_bytes ? formatPercent((p.mem_avail_bytes / p.mem_total_bytes) * 100) : '-'}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5">Free (Unallocated)</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_free_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.mem_free_bytes)} B</td>
-                    <td className="py-2.5">{p?.mem_total_bytes ? formatPercent((p.mem_free_bytes / p.mem_total_bytes) * 100) : '-'}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5">Buffers</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_buffers_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.mem_buffers_bytes)} B</td>
-                    <td className="py-2.5">{p?.mem_total_bytes ? formatPercent((p.mem_buffers_bytes / p.mem_total_bytes) * 100) : '-'}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5">Cached Memory</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_cached_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.mem_cached_bytes)} B</td>
-                    <td className="py-2.5">{p?.mem_total_bytes ? formatPercent((p.mem_cached_bytes / p.mem_total_bytes) * 100) : '-'}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5">Active / Inactive</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_active_bytes)} / {formatBytes(p?.mem_inactive_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">-</td>
-                    <td className="py-2.5">-</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5">Kernel Slab / Dirty</td>
-                    <td className="py-2.5">{formatBytes(p?.mem_slab_bytes)} / {formatBytes(p?.mem_dirty_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">-</td>
-                    <td className="py-2.5">-</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 text-purple-400">Total Swap</td>
-                    <td className="py-2.5">{formatBytes(p?.swap_total_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.swap_total_bytes)} B</td>
-                    <td className="py-2.5">-</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 text-purple-400">Used Swap</td>
-                    <td className="py-2.5">{formatBytes(p?.swap_used_bytes)}</td>
-                    <td className="py-2.5 text-dark-400">{formatNumber(p?.swap_used_bytes)} B</td>
-                    <td className="py-2.5">{formatPercent(p?.swap)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Historical Memory Chart */}
-          <MetricChart
-            title="Memory Usage History"
-            data={memSeries}
-            unit="%"
-            color="emerald"
-            activeWindow={chartWindow}
-            onWindowChange={setChartWindow}
-            loading={chartsLoading}
-            height={260}
-          />
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* TAB 4: DISKS & I/O */}
-      {/* ========================================================= */}
-      {activeTab === 'disk' && (
-        <div className="space-y-6">
-          {/* Mount Points Table */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-              <HardDrive size={16} className="text-purple-400" /> Filesystem Mount Points & Inodes
-            </h3>
-
-            {(!p?.mounts || p.mounts.length === 0) ? (
-              <div className="py-8 text-center text-xs text-dark-500 font-mono">
-                No mount points reported from /proc/mounts.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-dark-800 text-dark-500 text-[10px] uppercase">
-                      <th className="pb-2">Mount Point</th>
-                      <th className="pb-2">Device</th>
-                      <th className="pb-2">Type</th>
-                      <th className="pb-2">Used / Total</th>
-                      <th className="pb-2">Usage %</th>
-                      <th className="pb-2">Inodes (Used/Total)</th>
-                      <th className="pb-2">Inodes %</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-dark-800/60 text-dark-300">
-                    {p.mounts.map((m, idx) => (
-                      <tr key={idx}>
-                        <td className="py-3 font-semibold text-white">{m.mount_point}</td>
-                        <td className="py-3 text-dark-400">{m.device}</td>
-                        <td className="py-3 uppercase text-[11px] text-dark-400">{m.fs_type}</td>
-                        <td className="py-3">
-                          {formatBytes(m.used_bytes)} / {formatBytes(m.total_bytes)}
-                        </td>
-                        <td className="py-3">
-                          <div className="flex items-center gap-2">
-                            <span className={m.percent > 85 ? 'text-rose-400 font-bold' : 'text-white'}>
-                              {m.percent.toFixed(1)}%
-                            </span>
-                            <div className="w-16 bg-dark-950 h-1.5 rounded-full overflow-hidden border border-dark-800 hidden sm:block">
-                              <div
-                                className={`h-full ${m.percent > 85 ? 'bg-rose-500' : 'bg-purple-500'}`}
-                                style={{ width: `${Math.min(m.percent, 100)}%` }}
-                              />
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-3 text-dark-400">
-                          {m.inodes_total ? `${formatNumber(m.inodes_used)} / ${formatNumber(m.inodes_total)}` : 'N/A'}
-                        </td>
-                        <td className="py-3 text-dark-400">
-                          {m.inodes_percent !== undefined ? `${m.inodes_percent.toFixed(1)}%` : '-'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Block Devices I/O Table */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-              <Activity size={16} className="text-blue-400" /> Block Device Throughput & IOPS (/proc/diskstats)
-            </h3>
-
-            {(!p?.disk_io_devices || p.disk_io_devices.length === 0) ? (
-              <div className="py-8 text-center text-xs text-dark-500 font-mono">
-                No block devices detected or non-Linux system.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-dark-800 text-dark-500 text-[10px] uppercase">
-                      <th className="pb-2">Device</th>
-                      <th className="pb-2">Read Rate</th>
-                      <th className="pb-2">Write Rate</th>
-                      <th className="pb-2">Read IOPS</th>
-                      <th className="pb-2">Write IOPS</th>
-                      <th className="pb-2">Total Read</th>
-                      <th className="pb-2">Total Written</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-dark-800/60 text-dark-300">
-                    {p.disk_io_devices.map((dev, idx) => (
-                      <tr key={idx}>
-                        <td className="py-3 font-semibold text-white">{dev.device_name}</td>
-                        <td className="py-3 text-emerald-400 font-bold">{formatNetworkSpeed(dev.read_bytes_sec)}</td>
-                        <td className="py-3 text-blue-400 font-bold">{formatNetworkSpeed(dev.write_bytes_sec)}</td>
-                        <td className="py-3 text-dark-300">{dev.read_ops_sec.toFixed(1)} ops/s</td>
-                        <td className="py-3 text-dark-300">{dev.write_ops_sec.toFixed(1)} ops/s</td>
-                        <td className="py-3 text-dark-400">{formatBytes(dev.total_read_bytes)}</td>
-                        <td className="py-3 text-dark-400">{formatBytes(dev.total_write_bytes)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Historical Disk Chart */}
-          <MetricChart
-            title="Primary Filesystem Usage History"
-            data={diskSeries}
-            unit="%"
-            color="purple"
-            activeWindow={chartWindow}
-            onWindowChange={setChartWindow}
-            loading={chartsLoading}
-            height={240}
-          />
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* TAB 5: NETWORK */}
-      {/* ========================================================= */}
-      {activeTab === 'network' && (
-        <div className="space-y-6">
-          {/* Interfaces Table */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-              <Network size={16} className="text-blue-400" /> Network Adapters (/proc/net/dev)
-            </h3>
-
-            {(!p?.interfaces || p.interfaces.length === 0) ? (
-              <div className="py-8 text-center text-xs text-dark-500 font-mono">
-                No network interfaces detected.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-dark-800 text-dark-500 text-[10px] uppercase">
-                      <th className="pb-2">Interface</th>
-                      <th className="pb-2">Status</th>
-                      <th className="pb-2">IP Addresses</th>
-                      <th className="pb-2">MAC Address</th>
-                      <th className="pb-2">RX Throughput</th>
-                      <th className="pb-2">TX Throughput</th>
-                      <th className="pb-2">Packets / s</th>
-                      <th className="pb-2">Errors (RX/TX)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-dark-800/60 text-dark-300">
-                    {p.interfaces.map((iface, idx) => (
-                      <tr key={idx}>
-                        <td className="py-3 font-semibold text-white">{iface.name}</td>
-                        <td className="py-3">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                            iface.status === 'up'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-dark-800 text-dark-400 border border-dark-700'
-                          }`}>
-                            {iface.status}
-                          </span>
-                        </td>
-                        <td className="py-3 text-dark-200">
-                          {iface.ip_addresses?.length > 0 ? iface.ip_addresses.join(', ') : '-'}
-                        </td>
-                        <td className="py-3 text-dark-400">{iface.mac || '-'}</td>
-                        <td className="py-3 text-emerald-400 font-bold">
-                          ↓ {formatNetworkSpeed(iface.rx_bytes_sec)}
-                        </td>
-                        <td className="py-3 text-blue-400 font-bold">
-                          ↑ {formatNetworkSpeed(iface.tx_bytes_sec)}
-                        </td>
-                        <td className="py-3 text-dark-400">
-                          {iface.rx_packets_sec !== undefined ? `${(iface.rx_packets_sec + iface.tx_packets_sec).toFixed(0)} pkts/s` : '-'}
-                        </td>
-                        <td className="py-3 text-dark-400">
-                          {iface.total_rx_errors || iface.total_tx_errors ? (
-                            <span className="text-rose-400 font-bold">
-                              {iface.total_rx_errors} / {iface.total_tx_errors}
-                            </span>
-                          ) : (
-                            '0 / 0'
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Historical RX and TX Charts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <MetricChart
-              title="Network Received (RX Throughput)"
+              title="Disk Utilization"
+              data={diskSeries}
+              unit="%"
+              color="purple"
+              loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={200}
+            />
+            <MetricChart
+              title="1-Minute Load Average"
+              data={loadSeries}
+              unit="load"
+              color="amber"
+              loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={200}
+            />
+            <MetricChart
+              title="Network RX Throughput"
               data={netRxSeries}
               unit="bytes"
               color="emerald"
+              loading={chartsLoading}
               activeWindow={chartWindow}
               onWindowChange={setChartWindow}
-              loading={chartsLoading}
-              height={220}
+              height={200}
             />
             <MetricChart
-              title="Network Transmitted (TX Throughput)"
+              title="Network TX Throughput"
               data={netTxSeries}
               unit="bytes"
               color="blue"
+              loading={chartsLoading}
               activeWindow={chartWindow}
               onWindowChange={setChartWindow}
-              loading={chartsLoading}
-              height={220}
+              height={200}
             />
+            <MetricChart
+              title="TCP Connections"
+              data={tcpSeries}
+              unit="sockets"
+              color="cyan"
+              loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={200}
+            />
+            <MetricChart
+              title="Packet Drops / Errors"
+              data={dropsSeries}
+              unit="drops/s"
+              color="rose"
+              loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={200}
+            />
+            <div className="lg:col-span-2">
+              <MetricChart
+                title="Active Process Count"
+                data={procCountSeries}
+                unit="procs"
+                color="purple"
+                loading={chartsLoading}
+                activeWindow={chartWindow}
+                onWindowChange={setChartWindow}
+                height={200}
+              />
+            </div>
           </div>
         </div>
       )}
 
       {/* ========================================================= */}
-      {/* TAB 6: SYSTEM & DIAGNOSTICS */}
+      {/* TAB 3: PROCESSES */}
       {/* ========================================================= */}
-      {activeTab === 'diagnostics' && (
-        <div className="space-y-6">
-          {/* Collector Execution & Reliability Status */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
-              <Sliders size={16} className="text-brand-400" /> Subsystem Metric Collectors Diagnostic Report
-            </h3>
-            <p className="text-xs text-dark-400 mb-4">
-              Direct verification of Linux /proc, /sys and hardware sensor readers on this server:
-            </p>
+      {activeTab === 'processes' && (
+        <div className="space-y-4">
+          {/* Top Consuming Highlights */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 bg-dark-900 border border-dark-800 rounded-2xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-mono uppercase text-dark-500">Top CPU Consumer</span>
+                <h4 className="text-base font-bold text-white mt-0.5 truncate max-w-[200px]">
+                  {sortedProcesses[0]?.name || 'Unavailable'}
+                </h4>
+                <p className="text-xs text-dark-400 font-mono">PID {sortedProcesses[0]?.pid || '-'}</p>
+              </div>
+              <div className="text-right">
+                <div className="text-xl font-bold font-mono text-brand-400">
+                  {formatPercent(sortedProcesses[0]?.cpu_percent)}
+                </div>
+                <div className="text-[11px] text-dark-500 font-mono">
+                  {sortedProcesses[0]?.threads || 1} threads
+                </div>
+              </div>
+            </div>
 
-            {(!p?.collectors || Object.keys(p.collectors).length === 0) ? (
-              <div className="py-6 text-center text-xs text-dark-500 font-mono">
-                No collector diagnostics available yet.
+            <div className="p-4 bg-dark-900 border border-dark-800 rounded-2xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-mono uppercase text-dark-500">Top Memory Consumer</span>
+                {(() => {
+                  const topMem = [...sortedProcesses].sort((a, b) => (b.memory_bytes || 0) - (a.memory_bytes || 0))[0];
+                  return (
+                    <>
+                      <h4 className="text-base font-bold text-white mt-0.5 truncate max-w-[200px]">
+                        {topMem?.name || 'Unavailable'}
+                      </h4>
+                      <p className="text-xs text-dark-400 font-mono">PID {topMem?.pid || '-'}</p>
+                    </>
+                  );
+                })()}
+              </div>
+              <div className="text-right">
+                {(() => {
+                  const topMem = [...sortedProcesses].sort((a, b) => (b.memory_bytes || 0) - (a.memory_bytes || 0))[0];
+                  return (
+                    <>
+                      <div className="text-xl font-bold font-mono text-emerald-400">
+                        {topMem?.memory_bytes ? formatBytes(topMem.memory_bytes) : formatPercent(topMem?.memory_percent)}
+                      </div>
+                      <div className="text-[11px] text-dark-500 font-mono">
+                        {formatPercent(topMem?.memory_percent)} RAM
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* Controls: Search & Sort */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-dark-900 border border-dark-800 rounded-2xl">
+            <div className="relative flex-1 max-w-sm">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-500" />
+              <input
+                type="text"
+                placeholder="Search processes by name, command, PID..."
+                value={processSearch}
+                onChange={(e) => setProcessSearch(e.target.value)}
+                className="w-full bg-dark-950 border border-dark-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-dark-500 font-mono focus:outline-none focus:border-brand-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span className="text-dark-500">Sort by:</span>
+              {[
+                { id: 'cpu', label: 'CPU %' },
+                { id: 'mem', label: 'Memory' },
+                { id: 'read', label: 'Disk R' },
+                { id: 'write', label: 'Disk W' },
+                { id: 'pid', label: 'PID' },
+              ].map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => setProcessSort(s.id)}
+                  className={`px-2.5 py-1 rounded-lg border transition-colors ${
+                    processSort === s.id
+                      ? 'bg-brand-600/20 text-brand-400 border-brand-500/30 font-bold'
+                      : 'bg-dark-950 text-dark-400 border-dark-800 hover:text-white'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Process Table */}
+          <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs">
+            {sortedProcesses.length === 0 ? (
+              <div className="py-12 text-center text-dark-500 text-xs font-mono">
+                <Terminal size={32} className="mx-auto text-dark-600 mb-2 opacity-60" />
+                No process telemetry reported for this node.
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs font-mono">
                   <thead>
-                    <tr className="border-b border-dark-800 text-dark-500 text-[10px] uppercase">
-                      <th className="pb-2">Collector Domain</th>
-                      <th className="pb-2">Status</th>
-                      <th className="pb-2">Duration</th>
-                      <th className="pb-2">Diagnostic Message</th>
+                    <tr className="border-b border-dark-800 text-dark-500 text-[11px] bg-dark-950/60">
+                      <th className="py-2.5 px-4 font-medium">Process</th>
+                      <th className="py-2.5 px-3 font-medium">PID</th>
+                      <th className="py-2.5 px-3 font-medium text-right">CPU %</th>
+                      <th className="py-2.5 px-3 font-medium text-right">MEM %</th>
+                      <th className="py-2.5 px-3 font-medium text-right">RSS</th>
+                      <th className="py-2.5 px-3 font-medium text-right">Threads</th>
+                      <th className="py-2.5 px-3 font-medium text-right">Disk Read</th>
+                      <th className="py-2.5 px-3 font-medium text-right">Disk Write</th>
+                      <th className="py-2.5 px-4 font-medium">Command</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-dark-800/60 text-dark-300">
-                    {Object.entries(p.collectors).map(([name, rep]) => (
-                      <tr key={name}>
-                        <td className="py-2.5 font-semibold text-white capitalize">{name}</td>
-                        <td className="py-2.5">
-                          {rep.status === 'ok' ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-flex items-center gap-1">
-                              <CheckCircle2 size={12} /> OK
-                            </span>
-                          ) : rep.status === 'unavailable' ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 inline-flex items-center gap-1">
-                              <HelpCircle size={12} /> UNAVAILABLE
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20 inline-flex items-center gap-1">
-                              <XCircle size={12} /> ERROR
-                            </span>
-                          )}
+                  <tbody className="divide-y divide-dark-800/40">
+                    {sortedProcesses.map((proc, idx) => (
+                      <tr key={`${proc.pid}-${idx}`} className="hover:bg-dark-950/40 transition-colors">
+                        <td className="py-2.5 px-4 font-bold text-white">
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 shrink-0" />
+                            <span className="truncate max-w-[160px]">{proc.name}</span>
+                          </span>
                         </td>
-                        <td className="py-2.5 text-dark-400">{formatDurationUS(rep.duration_us)}</td>
-                        <td className="py-2.5 text-dark-300">{rep.message || 'Operational'}</td>
+                        <td className="py-2.5 px-3 text-dark-400">{proc.pid}</td>
+                        <td className="py-2.5 px-3 text-right font-bold text-brand-400">
+                          {formatPercent(proc.cpu_percent)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-emerald-400 font-bold">
+                          {formatPercent(proc.memory_percent)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-dark-300">
+                          {proc.memory_bytes ? formatBytes(proc.memory_bytes) : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-dark-400">
+                          {proc.threads || 1}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-dark-400">
+                          {proc.read_bytes_sec ? formatNetworkSpeed(proc.read_bytes_sec) : '0 B/s'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-dark-400">
+                          {proc.write_bytes_sec ? formatNetworkSpeed(proc.write_bytes_sec) : '0 B/s'}
+                        </td>
+                        <td className="py-2.5 px-4 text-dark-500 truncate max-w-[220px]" title={proc.command}>
+                          {proc.command || proc.name}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1118,195 +900,562 @@ export default function NodeDetail({ nodeId, onBack }) {
               </div>
             )}
           </div>
+        </div>
+      )}
 
-          {/* Real Thermal Sensors List */}
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
-              <Thermometer size={16} className="text-amber-400" /> Physical Hardware Thermal Sensors
-            </h3>
-
-            {(!p?.thermal_sensors || p.thermal_sensors.length === 0) ? (
-              <div className="p-4 bg-dark-950 border border-dark-800 rounded-xl text-xs text-dark-400">
-                <span className="font-semibold text-amber-400 block mb-1">No Hardware Sensors Found</span>
-                No thermal zones exist in <code className="text-dark-300">/sys/class/thermal</code> or <code className="text-dark-300">/sys/class/hwmon</code>.
-                This is completely normal on virtual machines (KVM/QEMU/Xen), container environments (LXC/Docker), and cloud servers (AWS, Hetzner, DigitalOcean) where the hypervisor does not expose raw motherboard diodes.
+      {/* ========================================================= */}
+      {/* TAB 4: NETWORK */}
+      {/* ========================================================= */}
+      {activeTab === 'network' && (
+        <div className="space-y-6">
+          {/* Socket Summary & Retransmission Strip */}
+          <div className="p-4 bg-dark-900 border border-dark-800 rounded-2xl grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
+            <div>
+              <div className="text-dark-500">TCP Total / Established</div>
+              <div className="text-base font-bold text-white mt-1">
+                {p.tcp?.total ?? 'Unavailable'} / {p.tcp?.established ?? '-'}
               </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                {p.thermal_sensors.map((sensor, idx) => (
-                  <div key={idx} className="bg-dark-950 border border-dark-800 rounded-xl p-3 font-mono text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="text-dark-300 font-semibold">{sensor.name}</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        sensor.status === 'ok'
-                          ? 'bg-emerald-500/10 text-emerald-400'
-                          : sensor.status === 'warning'
-                          ? 'bg-amber-500/10 text-amber-400'
-                          : 'bg-rose-500/10 text-rose-400'
-                      }`}>
-                        {sensor.status}
-                      </span>
-                    </div>
-                    <p className="text-xl font-bold text-white mt-1">
-                      {sensor.temperature_c.toFixed(1)}°C
-                    </p>
-                  </div>
-                ))}
+            </div>
+            <div>
+              <div className="text-dark-500">UDP Sockets</div>
+              <div className="text-base font-bold text-cyan-400 mt-1">
+                {p.tcp?.udp_total ?? 'Unavailable'}
               </div>
-            )}
+            </div>
+            <div>
+              <div className="text-dark-500">TCP Retransmission Rate</div>
+              <div className="text-base font-bold text-amber-400 mt-1">
+                {p.tcp?.retrans_rate !== undefined ? `${p.tcp.retrans_rate.toFixed(2)}%` : 'Unavailable'}
+              </div>
+            </div>
+            <div>
+              <div className="text-dark-500">Total Retrans Segments</div>
+              <div className="text-base font-bold text-dark-200 mt-1">
+                {p.tcp?.retrans_total ? formatNumber(p.tcp.retrans_total) : '0'}
+              </div>
+            </div>
           </div>
 
-          {/* Processes & TCP State Matrices */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Process States */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-              <h3 className="text-sm font-semibold text-white mb-3">Process States (/proc/[pid]/stat)</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono text-xs">
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Total</span>
-                  <span className="text-lg font-bold text-white">{p?.processes?.total ? formatNumber(p.processes.total) : 'N/A'}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Running (R)</span>
-                  <span className="text-lg font-bold text-emerald-400">{p?.processes?.running ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Sleeping (S/I)</span>
-                  <span className="text-lg font-bold text-blue-400">{p?.processes?.sleeping ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Disk Sleep (D)</span>
-                  <span className="text-lg font-bold text-amber-400">{p?.processes?.disk_sleep ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Zombie (Z)</span>
-                  <span className="text-lg font-bold text-rose-400">{p?.processes?.zombie ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Stopped (T)</span>
-                  <span className="text-lg font-bold text-dark-300">{p?.processes?.stopped ?? 0}</span>
-                </div>
+          {/* Interfaces Table */}
+          <Panel title="Network Interfaces" meta="Per-interface bandwidth and drops from /sys/class/net">
+            {!p.interfaces || p.interfaces.length === 0 ? (
+              <div className="py-8 text-center text-dark-500 text-xs font-mono">
+                No per-interface telemetry available.
               </div>
-            </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-dark-800 text-dark-500 text-[11px]">
+                      <th className="pb-2 font-medium">Interface</th>
+                      <th className="pb-2 font-medium">Status</th>
+                      <th className="pb-2 font-medium">Speed</th>
+                      <th className="pb-2 font-medium text-right">RX Speed</th>
+                      <th className="pb-2 font-medium text-right">TX Speed</th>
+                      <th className="pb-2 font-medium text-right">RX Pkts/s</th>
+                      <th className="pb-2 font-medium text-right">TX Pkts/s</th>
+                      <th className="pb-2 font-medium text-right">Drops/s</th>
+                      <th className="pb-2 font-medium text-right">Errors/s</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-dark-800/40">
+                    {p.interfaces.map((iface) => (
+                      <tr key={iface.name} className="hover:bg-dark-950/40">
+                        <td className="py-2.5 font-bold text-white flex items-center gap-2">
+                          <Network size={14} className="text-brand-400" />
+                          <span>{iface.name}</span>
+                        </td>
+                        <td className="py-2.5">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            iface.status === 'up' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-dark-800 text-dark-400'
+                          }`}>
+                            {iface.status?.toUpperCase() || 'UP'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-dark-400">
+                          {iface.speed_mbps ? `${iface.speed_mbps} Mbps` : 'Virtual / Auto'}
+                        </td>
+                        <td className="py-2.5 text-right font-bold text-emerald-400">
+                          {formatNetworkSpeed(iface.rx_bytes_sec)}
+                        </td>
+                        <td className="py-2.5 text-right font-bold text-blue-400">
+                          {formatNetworkSpeed(iface.tx_bytes_sec)}
+                        </td>
+                        <td className="py-2.5 text-right text-dark-300">
+                          {formatPacketRate(iface.rx_packets_sec)}
+                        </td>
+                        <td className="py-2.5 text-right text-dark-300">
+                          {formatPacketRate(iface.tx_packets_sec)}
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <span className={(iface.rx_drops_sec || 0) + (iface.tx_drops_sec || 0) > 0 ? 'text-amber-400 font-bold' : 'text-dark-500'}>
+                            {((iface.rx_drops_sec || 0) + (iface.tx_drops_sec || 0)).toFixed(0)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <span className={(iface.rx_errors_sec || 0) + (iface.tx_errors_sec || 0) > 0 ? 'text-rose-400 font-bold' : 'text-dark-500'}>
+                            {((iface.rx_errors_sec || 0) + (iface.tx_errors_sec || 0)).toFixed(0)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
 
-            {/* TCP Sockets */}
-            <div className="bg-dark-900 border border-dark-800 rounded-2xl p-5 shadow-xs">
-              <h3 className="text-sm font-semibold text-white mb-3">TCP Connection Matrix (/proc/net/tcp)</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono text-xs">
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Total TCP</span>
-                  <span className="text-lg font-bold text-white">{p?.tcp?.total ? formatNumber(p.tcp.total) : 'N/A'}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Established</span>
-                  <span className="text-lg font-bold text-emerald-400">{p?.tcp?.established ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Listening</span>
-                  <span className="text-lg font-bold text-purple-400">{p?.tcp?.listen ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Time Wait</span>
-                  <span className="text-lg font-bold text-amber-400">{p?.tcp?.time_wait ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">Close Wait</span>
-                  <span className="text-lg font-bold text-rose-400">{p?.tcp?.close_wait ?? 0}</span>
-                </div>
-                <div className="bg-dark-950 p-3 rounded-xl border border-dark-800">
-                  <span className="text-dark-500 text-[10px] uppercase block">UDP Sockets</span>
-                  <span className="text-lg font-bold text-blue-400">{p?.tcp?.udp_total ?? 0}</span>
-                </div>
-              </div>
-            </div>
+          {/* Historical RX/TX Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <MetricChart
+              title="Interface RX Historical Bandwidth"
+              data={netRxSeries}
+              unit="bytes"
+              color="emerald"
+              loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={180}
+            />
+            <MetricChart
+              title="Interface TX Historical Bandwidth"
+              data={netTxSeries}
+              unit="bytes"
+              color="blue"
+              loading={chartsLoading}
+              activeWindow={chartWindow}
+              onWindowChange={setChartWindow}
+              height={180}
+            />
           </div>
         </div>
       )}
 
       {/* ========================================================= */}
-      {/* TAB 7: SERVICES */}
+      {/* TAB 5: DISKS */}
+      {/* ========================================================= */}
+      {activeTab === 'disks' && (
+        <div className="space-y-6">
+          {/* Mounted Filesystems */}
+          <Panel title="Mounted Filesystems" meta="All mounted storage partitions (/ , /home, /var, /tmp, etc.)">
+            {!p.mounts || p.mounts.length === 0 ? (
+              <div className="py-8 text-center text-dark-500 text-xs font-mono">
+                No filesystem mount telemetry detected.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-dark-800 text-dark-500 text-[11px]">
+                      <th className="pb-2 font-medium">Mount Point</th>
+                      <th className="pb-2 font-medium">Device</th>
+                      <th className="pb-2 font-medium">Type</th>
+                      <th className="pb-2 font-medium text-right">Total</th>
+                      <th className="pb-2 font-medium text-right">Used</th>
+                      <th className="pb-2 font-medium text-right">Available</th>
+                      <th className="pb-2 font-medium text-right">Usage %</th>
+                      <th className="pb-2 font-medium text-right">Inodes %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-dark-800/40">
+                    {p.mounts.map((m) => (
+                      <tr key={m.mount_point} className="hover:bg-dark-950/40">
+                        <td className="py-2.5 font-bold text-white flex items-center gap-2">
+                          <HardDrive size={14} className="text-purple-400" />
+                          <span>{m.mount_point}</span>
+                        </td>
+                        <td className="py-2.5 text-dark-400">{m.device}</td>
+                        <td className="py-2.5 text-dark-500">{m.fs_type}</td>
+                        <td className="py-2.5 text-right text-dark-300">{formatBytes(m.total_bytes)}</td>
+                        <td className="py-2.5 text-right font-medium text-white">{formatBytes(m.used_bytes)}</td>
+                        <td className="py-2.5 text-right text-dark-300">{formatBytes(m.avail_bytes)}</td>
+                        <td className="py-2.5 text-right font-bold">
+                          <span className={m.percent > 90 ? 'text-rose-400' : m.percent > 80 ? 'text-amber-400' : 'text-purple-400'}>
+                            {formatPercent(m.percent)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-right text-dark-400">
+                          {m.inodes_percent !== undefined ? formatPercent(m.inodes_percent) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+
+          {/* Block Devices / Disk I/O */}
+          <Panel title="Block Storage Devices & I/O" meta="IOPS and latency per physical block device (/proc/diskstats)">
+            {!p.disk_io_devices || p.disk_io_devices.length === 0 ? (
+              <div className="py-6 text-center text-dark-500 text-xs font-mono">
+                No block device I/O telemetry reported.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-dark-800 text-dark-500 text-[11px]">
+                      <th className="pb-2 font-medium">Device</th>
+                      <th className="pb-2 font-medium text-right">Read Speed</th>
+                      <th className="pb-2 font-medium text-right">Write Speed</th>
+                      <th className="pb-2 font-medium text-right">Read Ops/s</th>
+                      <th className="pb-2 font-medium text-right">Write Ops/s</th>
+                      <th className="pb-2 font-medium text-right">IOPS</th>
+                      <th className="pb-2 font-medium text-right">Latency</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-dark-800/40">
+                    {p.disk_io_devices.map((d) => (
+                      <tr key={d.device_name} className="hover:bg-dark-950/40">
+                        <td className="py-2.5 font-bold text-white">{d.device_name}</td>
+                        <td className="py-2.5 text-right text-emerald-400">{formatNetworkSpeed(d.read_bytes_sec)}</td>
+                        <td className="py-2.5 text-right text-purple-400">{formatNetworkSpeed(d.write_bytes_sec)}</td>
+                        <td className="py-2.5 text-right text-dark-300">{d.read_ops_sec?.toFixed(1) || '0'}</td>
+                        <td className="py-2.5 text-right text-dark-300">{d.write_ops_sec?.toFixed(1) || '0'}</td>
+                        <td className="py-2.5 text-right font-bold text-white">{formatIOPS(d.iops)}</td>
+                        <td className="py-2.5 text-right text-amber-400">{formatLatency(d.latency_ms)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* TAB 6: SERVICES */}
       {/* ========================================================= */}
       {activeTab === 'services' && (
-        <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs">
-          <div className="px-6 py-4 border-b border-dark-800 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Monitored Host Daemons</h3>
-            <span className="text-xs text-dark-400">Inspected automatically via /proc/[pid]/comm</span>
+        <div className="space-y-4">
+          {/* Service Filters */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-dark-900 border border-dark-800 rounded-2xl">
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span className="text-dark-500">Filter:</span>
+              {['all', 'running', 'stopped', 'failed'].map((sf) => (
+                <button
+                  key={sf}
+                  onClick={() => setServiceFilter(sf)}
+                  className={`px-3 py-1 rounded-lg border capitalize transition-colors ${
+                    serviceFilter === sf
+                      ? 'bg-brand-600/20 text-brand-400 border-brand-500/30 font-bold'
+                      : 'bg-dark-950 text-dark-400 border-dark-800 hover:text-white'
+                  }`}
+                >
+                  {sf}
+                </button>
+              ))}
+            </div>
+
+            <div className="text-xs font-mono text-dark-500">
+              {filteredServices.length} of {services.length} services
+            </div>
           </div>
 
-          {services.length === 0 ? (
-            <div className="py-12 text-center text-xs text-dark-500 font-mono">
-              No services reported yet.
+          {/* Failed Services Alert Banner */}
+          {services.some((s) => s.status === 'FAILED') && (
+            <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-3 text-rose-300 text-xs font-mono">
+              <AlertTriangle size={18} className="text-rose-400 shrink-0" />
+              <div>
+                <strong>Warning:</strong> One or more systemd services on this server are in a FAILED state.
+              </div>
+            </div>
+          )}
+
+          {/* Services Table */}
+          <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs">
+            {filteredServices.length === 0 ? (
+              <div className="py-12 text-center text-dark-500 text-xs font-mono">
+                <Sliders size={32} className="mx-auto text-dark-600 mb-2 opacity-60" />
+                No services match the current filter.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-dark-800 text-dark-500 text-[11px] bg-dark-950/60">
+                      <th className="py-2.5 px-4 font-medium">Service Name</th>
+                      <th className="py-2.5 px-3 font-medium">Status</th>
+                      <th className="py-2.5 px-3 font-medium text-right">CPU %</th>
+                      <th className="py-2.5 px-3 font-medium text-right">Memory</th>
+                      <th className="py-2.5 px-3 font-medium text-right">Uptime</th>
+                      <th className="py-2.5 px-3 font-medium text-right">Restarts</th>
+                      <th className="py-2.5 px-4 font-medium">Last Restart</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-dark-800/40">
+                    {filteredServices.map((svc) => (
+                      <tr key={svc.name} className="hover:bg-dark-950/40 transition-colors">
+                        <td className="py-2.5 px-4 font-bold text-white flex items-center gap-2">
+                          <Sliders size={13} className="text-dark-500" />
+                          <span>{svc.name}</span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            svc.status === 'RUNNING'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : svc.status === 'FAILED'
+                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              : 'bg-dark-800 text-dark-400 border border-dark-700'
+                          }`}>
+                            {svc.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-brand-400 font-semibold">
+                          {svc.cpu_percent ? formatPercent(svc.cpu_percent) : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-dark-300">
+                          {svc.memory_bytes ? formatBytes(svc.memory_bytes) : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-emerald-400">
+                          {svc.uptime_seconds ? formatUptime(svc.uptime_seconds) : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-dark-400">
+                          {svc.restart_count ?? 0}
+                        </td>
+                        <td className="py-2.5 px-4 text-dark-500">
+                          {svc.last_restart || '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* TAB 7: DOCKER */}
+      {/* ========================================================= */}
+      {activeTab === 'docker' && (
+        <div className="space-y-4">
+          {!dockerData.available ? (
+            <div className="p-8 bg-dark-900 border border-dark-800 rounded-2xl text-center space-y-2">
+              <Box size={36} className="mx-auto text-dark-600 mb-1 opacity-70" />
+              <h3 className="text-base font-semibold text-white">Docker Not Detected</h3>
+              <p className="text-xs text-dark-400 font-mono max-w-md mx-auto">
+                {dockerData.message || 'The Docker daemon socket (/var/run/docker.sock) was not found or is inaccessible on this server.'}
+              </p>
+              <p className="text-[11px] text-dark-500 font-mono pt-2">
+                Docker metrics are never faked or simulated. Once Docker is installed and running, container telemetry will automatically appear here.
+              </p>
             </div>
           ) : (
-            <div className="divide-y divide-dark-800">
-              {services.map((svc) => (
-                <div key={svc.id || svc.name} className="px-6 py-3.5 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono font-medium text-white">{svc.name}</span>
-                    {svc.pid ? (
-                      <span className="text-[10px] text-dark-500 font-mono">PID {svc.pid}</span>
-                    ) : null}
-                  </div>
-                  <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold capitalize ${
-                    svc.status === 'running'
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                      : svc.status === 'stopped'
-                      ? 'bg-dark-800 text-dark-400 border border-dark-700'
-                      : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                  }`}>
-                    {svc.status}
-                  </span>
+            <div className="space-y-4">
+              <div className="p-4 bg-dark-900 border border-dark-800 rounded-2xl flex items-center justify-between text-xs font-mono">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="font-bold text-white">Docker Daemon Active</span>
                 </div>
-              ))}
+                <div className="text-dark-400">
+                  {dockerData.containers?.length || 0} container(s) detected
+                </div>
+              </div>
+
+              <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs font-mono">
+                    <thead>
+                      <tr className="border-b border-dark-800 text-dark-500 text-[11px] bg-dark-950/60">
+                        <th className="py-2.5 px-4 font-medium">Container Name</th>
+                        <th className="py-2.5 px-3 font-medium">State</th>
+                        <th className="py-2.5 px-3 font-medium text-right">CPU %</th>
+                        <th className="py-2.5 px-3 font-medium text-right">Memory</th>
+                        <th className="py-2.5 px-3 font-medium text-right">Net RX</th>
+                        <th className="py-2.5 px-3 font-medium text-right">Net TX</th>
+                        <th className="py-2.5 px-3 font-medium text-right">Restarts</th>
+                        <th className="py-2.5 px-4 font-medium">Uptime / Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-dark-800/40">
+                      {dockerData.containers.map((c) => (
+                        <tr key={c.id || c.name} className="hover:bg-dark-950/40 transition-colors">
+                          <td className="py-2.5 px-4 font-bold text-white">
+                            <div>{c.name}</div>
+                            <div className="text-[10px] text-dark-500 font-normal">{c.image}</div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              c.state === 'running'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                            }`}>
+                              {c.state?.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-bold text-brand-400">
+                            {formatPercent(c.cpu_percent)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-emerald-400">
+                            {formatBytes(c.memory_bytes)}
+                            {c.memory_limit > 0 && <span className="text-dark-500 text-[10px]"> / {formatBytes(c.memory_limit)}</span>}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-dark-300">
+                            {formatNetworkSpeed(c.network_rx)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-dark-300">
+                            {formatNetworkSpeed(c.network_tx)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-dark-400">
+                            {c.restart_count || 0}
+                          </td>
+                          <td className="py-2.5 px-4 text-dark-400">
+                            {c.status || formatUptime(c.uptime_seconds)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
         </div>
       )}
 
       {/* ========================================================= */}
-      {/* TAB 8: ALERTS */}
+      {/* TAB 8: LOGS */}
+      {/* ========================================================= */}
+      {activeTab === 'logs' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-dark-900 border border-dark-800 rounded-2xl">
+            <div className="relative flex-1 max-w-sm">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-500" />
+              <input
+                type="text"
+                placeholder="Search log messages or units..."
+                value={logSearch}
+                onChange={(e) => setLogSearch(e.target.value)}
+                className="w-full bg-dark-950 border border-dark-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-dark-500 font-mono focus:outline-none focus:border-brand-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span className="text-dark-500">Level:</span>
+              {['all', 'error', 'warning', 'info'].map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() => setLogLevelFilter(lvl)}
+                  className={`px-2.5 py-1 rounded-lg border capitalize transition-colors ${
+                    logLevelFilter === lvl
+                      ? 'bg-brand-600/20 text-brand-400 border-brand-500/30 font-bold'
+                      : 'bg-dark-950 text-dark-400 border-dark-800 hover:text-white'
+                  }`}
+                >
+                  {lvl}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-dark-900 border border-dark-800 rounded-2xl p-4 shadow-xs font-mono text-xs space-y-2 max-h-[500px] overflow-y-auto">
+            {filteredLogs.length === 0 ? (
+              <div className="py-12 text-center text-dark-500">
+                <FileText size={32} className="mx-auto text-dark-600 mb-2 opacity-60" />
+                No log entries matching filter.
+              </div>
+            ) : (
+              filteredLogs.map((log, idx) => (
+                <div key={idx} className="p-2.5 rounded-xl bg-dark-950 border border-dark-800/80 hover:border-dark-700 transition-colors flex items-start gap-3">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
+                    log.level === 'error'
+                      ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                      : log.level === 'warning'
+                      ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                      : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                  }`}>
+                    {log.level || 'INFO'}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between text-[10px] text-dark-500 mb-0.5">
+                      <span className="text-dark-300 font-semibold">{log.unit || 'system'}</span>
+                      <span>{formatDate(log.timestamp)}</span>
+                    </div>
+                    <p className="text-dark-200 text-xs break-all leading-relaxed">{log.message}</p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* TAB 9: ALERTS */}
       {/* ========================================================= */}
       {activeTab === 'alerts' && (
-        <div className="bg-dark-900 border border-dark-800 rounded-2xl overflow-hidden shadow-xs">
-          <div className="px-6 py-4 border-b border-dark-800">
-            <h3 className="text-sm font-semibold text-white">Alert Events for {node.name}</h3>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between p-4 bg-dark-900 border border-dark-800 rounded-2xl">
+            <div>
+              <h3 className="text-sm font-bold text-white">Server Alerts & Incidents</h3>
+              <p className="text-xs text-dark-400 font-mono mt-0.5">
+                Active and historical threshold alerts configured for {node.name}
+              </p>
+            </div>
+            <div className="text-xs font-mono text-dark-400">
+              {alerts.length} total incident(s)
+            </div>
           </div>
 
           {alerts.length === 0 ? (
-            <div className="py-12 text-center text-xs text-dark-500 font-mono">
-              No alert incidents recorded for this server.
+            <div className="py-16 bg-dark-900 border border-dark-800 rounded-2xl text-center">
+              <CheckCircle2 size={36} className="mx-auto text-emerald-400 mb-2 opacity-80" />
+              <h4 className="text-sm font-semibold text-white">All Nominal</h4>
+              <p className="text-xs text-dark-400 mt-1 font-mono">
+                No active threshold violations on this server.
+              </p>
             </div>
           ) : (
-            <div className="divide-y divide-dark-800">
-              {alerts.map((al) => (
-                <div key={al.id} className="p-4 flex items-center justify-between gap-4 text-xs">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        al.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
+            <div className="space-y-3">
+              {alerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className="p-4 bg-dark-900 border border-dark-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs font-mono"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${
+                        alert.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
                       }`} />
-                      <span className="font-semibold text-white">{al.rule_name || 'System Alert'}</span>
-                      <span className="px-1.5 py-0.2 rounded text-[10px] bg-dark-800 text-dark-400 uppercase">
-                        {al.status}
+                      <span className="font-bold text-white text-sm">{alert.rule_name || 'System Alert'}</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        alert.status === 'triggered'
+                          ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          : alert.status === 'acknowledged'
+                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                          : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      }`}>
+                        {alert.status}
                       </span>
                     </div>
-                    <p className="text-dark-400">{al.message}</p>
-                    <p className="text-[10px] text-dark-500 font-mono mt-1">{formatDate(al.triggered_at)}</p>
+
+                    <p className="text-dark-300 font-sans text-xs">{alert.message}</p>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-dark-500 pt-1">
+                      <span>Current: <strong className="text-white">{alert.value !== undefined ? alert.value : '—'}</strong></span>
+                      <span>Threshold: <strong className="text-white">{alert.threshold !== undefined ? alert.threshold : '—'}</strong></span>
+                      <span>Triggered: <strong className="text-dark-300">{formatDate(alert.triggered_at)}</strong></span>
+                      {alert.duration && <span>Duration: <strong className="text-dark-300">{alert.duration}</strong></span>}
+                    </div>
                   </div>
 
-                  {al.status !== 'resolved' && (
+                  {alert.status !== 'resolved' && (
                     <div className="flex items-center gap-2 shrink-0">
-                      {al.status === 'triggered' && (
+                      {alert.status === 'triggered' && (
                         <button
-                          onClick={() => handleAckAlert(al.id)}
-                          className="px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-dark-200 rounded-lg text-xs"
+                          onClick={() => handleAckAlert(alert.id)}
+                          className="px-3 py-1.5 bg-dark-800 hover:bg-dark-700 text-dark-200 rounded-xl text-xs font-medium border border-dark-700 transition-colors"
                         >
                           Acknowledge
                         </button>
                       )}
                       <button
-                        onClick={() => handleResolveAlert(al.id)}
-                        className="px-2.5 py-1 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 rounded-lg text-xs"
+                        onClick={() => handleResolveAlert(alert.id)}
+                        className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded-xl text-xs font-semibold border border-emerald-500/30 transition-colors"
                       >
                         Resolve
                       </button>
@@ -1320,56 +1469,175 @@ export default function NodeDetail({ nodeId, onBack }) {
       )}
 
       {/* ========================================================= */}
-      {/* TAB 9: INSTALL / AGENT */}
+      {/* TAB 10: SYSTEM */}
       {/* ========================================================= */}
-      {activeTab === 'install' && (
-        <div className="bg-dark-900 border border-dark-800 rounded-2xl p-6 shadow-xs space-y-4">
-          <h3 className="text-sm font-semibold text-white">Agent Installation Instructions</h3>
-          <p className="text-xs text-dark-400">
-            If you need to redeploy or reconfigure the monitoring agent on this server, execute the curl installer:
-          </p>
-
-          <div className="p-4 bg-dark-950 border border-dark-800 rounded-xl font-mono text-xs text-dark-300">
-            <code>curl -fsSL {window.location.origin}/install.sh | sudo bash -s -- --token "NODE_TOKEN"</code>
+      {activeTab === 'system' && (
+        <div className="bg-dark-900 border border-dark-800 rounded-2xl p-6 shadow-xs space-y-6">
+          <div>
+            <h3 className="text-base font-bold text-white">Linux Host System Specifications</h3>
+            <p className="text-xs text-dark-400 font-mono mt-0.5">
+              Hardware and operating system telemetry gathered directly from /proc/cpuinfo, uname, and host system.
+            </p>
           </div>
 
-          <p className="text-xs text-dark-400">
-            Click <strong>Rotate Token</strong> above to generate a fresh one-line installer command with your node's token.
-          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
+            <div className="space-y-3 p-4 bg-dark-950 rounded-xl border border-dark-800">
+              <h4 className="text-[11px] uppercase tracking-wider text-dark-400 font-bold border-b border-dark-800 pb-2">
+                Operating System & Platform
+              </h4>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">Hostname</span>
+                <span className="text-white font-bold">{node.hostname || p.hostname || '-'}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">Operating System</span>
+                <span className="text-white">{node.operating_system || node.distribution || 'Ubuntu Linux'}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">Kernel Version</span>
+                <span className="text-white">{node.kernel || '-'}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">Architecture</span>
+                <span className="text-white">{node.architecture || 'x86_64'}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">System Boot Time</span>
+                <span className="text-white">{p.boot_time ? formatDate(p.boot_time) : 'Unavailable'}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">System Uptime</span>
+                <span className="text-emerald-400 font-bold">
+                  {p.uptime_seconds ? formatUptime(p.uptime_seconds) : 'Unavailable'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span className="text-dark-500">Agent Version</span>
+                <span className="text-white">v{node.agent_version || '2.0.0'}</span>
+              </div>
+            </div>
+
+            <div className="space-y-3 p-4 bg-dark-950 rounded-xl border border-dark-800">
+              <h4 className="text-[11px] uppercase tracking-wider text-dark-400 font-bold border-b border-dark-800 pb-2">
+                Processor & Hardware Architecture
+              </h4>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">CPU Model</span>
+                <span className="text-white font-bold truncate max-w-[220px]" title={p.cpu_model || node.cpu_model}>
+                  {p.cpu_model || node.cpu_model || 'Standard Linux Processor'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">CPU Cores</span>
+                <span className="text-white">{p.cpu_count || node.cpu_cores || '-'}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">CPU Frequency</span>
+                <span className="text-white">
+                  {p.cpu_freq_mhz ? `${(p.cpu_freq_mhz / 1000).toFixed(2)} GHz` : 'Unavailable'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">Total Installed RAM</span>
+                <span className="text-white">
+                  {p.mem_total_bytes ? formatBytes(p.mem_total_bytes) : (node.ram_total ? formatBytes(node.ram_total) : 'Unavailable')}
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">Total Swap Space</span>
+                <span className="text-white">
+                  {p.swap_total_bytes ? formatBytes(p.swap_total_bytes) : 'No Swap Configured'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-dark-900">
+                <span className="text-dark-500">IP Addresses</span>
+                <span className="text-white">{node.ip_address || 'Unassigned'}</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span className="text-dark-500">Heartbeat Interval</span>
+                <span className="text-white">{node.heartbeat_interval || 5}s</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Rotated Token Modal */}
-      {rotatedTokenData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
-            <h3 className="text-base font-bold text-white">Token Rotated Successfully</h3>
-            <p className="text-xs text-dark-400">
-              Update your remote server with the new install command below:
+      {/* Agent Command Modal */}
+      {showInstallModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-dark-800">
+              <div className="flex items-center gap-2">
+                <Terminal size={18} className="text-brand-400" />
+                <h3 className="text-base font-bold text-white">Monitoring Agent Install Command</h3>
+              </div>
+              <button
+                onClick={() => setShowInstallModal(false)}
+                className="text-dark-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-dark-300">
+              Run this single command with root privileges on <strong>{node.name}</strong> to install or reconnect the NodeWatch monitoring agent:
             </p>
-            <div className="relative">
-              <textarea
-                readOnly
-                rows={3}
-                value={rotatedTokenData.install_command}
-                className="w-full font-mono text-xs bg-dark-950 border border-dark-800 rounded-xl p-3 text-dark-200 resize-none select-all focus:outline-none"
-              />
+
+            <div className="p-3 bg-dark-950 border border-dark-800 rounded-xl font-mono text-xs text-brand-300 break-all select-all">
+              curl -fsSL {window.location.origin}/install.sh | sudo bash -s -- --token "{node.id}"
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(`curl -fsSL ${window.location.origin}/install.sh | sudo bash -s -- --token "${node.id}"`);
+                  setCopiedToken(true);
+                  setTimeout(() => setCopiedToken(false), 2000);
+                }}
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              >
+                {copiedToken ? <Check size={14} /> : <Copy size={14} />}
+                {copiedToken ? 'Copied Command!' : 'Copy Command'}
+              </button>
+              <button
+                onClick={() => setShowInstallModal(false)}
+                className="px-4 py-2 bg-dark-800 hover:bg-dark-700 text-dark-200 rounded-xl text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rotated Token Result Modal */}
+      {rotatedTokenData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <Key size={18} className="text-amber-400" /> New Agent Authentication Token Generated
+            </h3>
+            <p className="text-xs text-dark-300">
+              The old token was revoked. Run the following command on the server to update the agent credentials:
+            </p>
+            <div className="p-3 bg-dark-950 border border-dark-800 rounded-xl font-mono text-xs text-amber-300 break-all select-all">
+              {rotatedTokenData.install_command}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(rotatedTokenData.install_command);
                   setCopiedToken(true);
                   setTimeout(() => setCopiedToken(false), 2000);
                 }}
-                className="absolute top-2.5 right-2.5 px-3 py-1 bg-dark-800 hover:bg-dark-700 text-xs text-white rounded-lg flex items-center gap-1"
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors"
               >
-                {copiedToken ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
-                {copiedToken ? 'Copied!' : 'Copy'}
+                {copiedToken ? <Check size={14} /> : <Copy size={14} />}
+                {copiedToken ? 'Copied!' : 'Copy Command'}
               </button>
-            </div>
-            <div className="flex justify-end">
               <button
                 onClick={() => setRotatedTokenData(null)}
-                className="px-4 py-2 bg-brand-600 text-white rounded-xl text-xs font-semibold"
+                className="px-4 py-2 bg-dark-800 hover:bg-dark-700 text-dark-200 rounded-xl text-xs font-semibold"
               >
                 Done
               </button>

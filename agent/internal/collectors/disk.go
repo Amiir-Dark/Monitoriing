@@ -15,6 +15,7 @@ type deviceSample struct {
 	writeBytes uint64
 	readOps    uint64
 	writeOps   uint64
+	ioTimeMS   int64
 }
 
 type DiskCollector struct {
@@ -79,6 +80,8 @@ func (d *DiskCollector) Collect(p *Payload) (CollectorReport, error) {
 	deviceDetails := make([]DiskIODeviceDetail, 0)
 
 	var totalReadBytesSec, totalWriteBytesSec, totalReadOpsSec, totalWriteOpsSec float64
+	var sumLatencyMS float64
+	var latencyDevicesCount int
 
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -108,6 +111,7 @@ func (d *DiskCollector) Collect(p *Payload) (CollectorReport, error) {
 			writeBytes: sectorsWritten * 512,
 			readOps:    reads,
 			writeOps:   writes,
+			ioTimeMS:   ioTimeMS,
 		}
 		currentSamples[devName] = curSample
 
@@ -118,20 +122,34 @@ func (d *DiskCollector) Collect(p *Payload) (CollectorReport, error) {
 			IOTimeMS:        ioTimeMS,
 		}
 
-		// Rate calculation with Counter Reset Protection
+		// Rate and IOPS calculation
 		if prev, ok := d.lastSample[devName]; ok && elapsedSec > 0.05 {
-			// Counter reset check (reboot or 32/64-bit wrap)
 			if curSample.readBytes >= prev.readBytes {
 				devDetail.ReadBytesSec = math.Round((float64(curSample.readBytes-prev.readBytes)/elapsedSec)*10) / 10
 			}
 			if curSample.writeBytes >= prev.writeBytes {
 				devDetail.WriteBytesSec = math.Round((float64(curSample.writeBytes-prev.writeBytes)/elapsedSec)*10) / 10
 			}
+			var deltaReadOps, deltaWriteOps uint64
 			if curSample.readOps >= prev.readOps {
-				devDetail.ReadOpsSec = math.Round((float64(curSample.readOps-prev.readOps)/elapsedSec)*10) / 10
+				deltaReadOps = curSample.readOps - prev.readOps
+				devDetail.ReadOpsSec = math.Round((float64(deltaReadOps)/elapsedSec)*10) / 10
 			}
 			if curSample.writeOps >= prev.writeOps {
-				devDetail.WriteOpsSec = math.Round((float64(curSample.writeOps-prev.writeOps)/elapsedSec)*10) / 10
+				deltaWriteOps = curSample.writeOps - prev.writeOps
+				devDetail.WriteOpsSec = math.Round((float64(deltaWriteOps)/elapsedSec)*10) / 10
+			}
+
+			devDetail.IOPS = math.Round((devDetail.ReadOpsSec+devDetail.WriteOpsSec)*10) / 10
+
+			// Latency calculation: deltaIOTimeMS / deltaOps
+			deltaOps := deltaReadOps + deltaWriteOps
+			if deltaOps > 0 && curSample.ioTimeMS >= prev.ioTimeMS {
+				deltaIOTime := curSample.ioTimeMS - prev.ioTimeMS
+				latency := float64(deltaIOTime) / float64(deltaOps)
+				devDetail.LatencyMS = math.Round(latency*100) / 100
+				sumLatencyMS += devDetail.LatencyMS
+				latencyDevicesCount++
 			}
 		}
 
@@ -150,6 +168,10 @@ func (d *DiskCollector) Collect(p *Payload) (CollectorReport, error) {
 	p.DiskWriteBytesSec = totalWriteBytesSec
 	p.DiskReadOpsSec = totalReadOpsSec
 	p.DiskWriteOpsSec = totalWriteOpsSec
+	p.DiskIOPS = totalReadOpsSec + totalWriteOpsSec
+	if latencyDevicesCount > 0 {
+		p.DiskLatencyMS = math.Round((sumLatencyMS/float64(latencyDevicesCount))*100) / 100
+	}
 
 	return CollectorReport{Status: "ok"}, nil
 }
@@ -162,14 +184,14 @@ func parseMounts() []DiskMountDetail {
 	}
 	defer f.Close()
 
-	// Virtual and pseudo filesystems to ignore
+	// Virtual and pseudo filesystems to ignore (allow tmpfs if mounted on /tmp)
 	ignoredTypes := map[string]bool{
-		"proc": true, "sysfs": true, "devpts": true, "tmpfs": true,
+		"proc": true, "sysfs": true, "devpts": true,
 		"cgroup": true, "cgroup2": true, "securityfs": true,
 		"pstore": true, "bpf": true, "autofs": true, "mqueue": true,
 		"hugetlbfs": true, "debugfs": true, "tracefs": true,
 		"configfs": true, "fusectl": true, "binfmt_misc": true,
-		"devtmpfs": true, "overlay": false, // keep overlay if docker/k8s
+		"devtmpfs": true, "overlay": false,
 	}
 
 	seenMounts := make(map[string]bool)
@@ -183,6 +205,10 @@ func parseMounts() []DiskMountDetail {
 		mountPoint := fields[1]
 		fsType := fields[2]
 
+		// Skip kernel pseudo FS, but allow /tmp even if tmpfs
+		if fsType == "tmpfs" && mountPoint != "/tmp" {
+			continue
+		}
 		if ignoredTypes[fsType] || seenMounts[mountPoint] {
 			continue
 		}

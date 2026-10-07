@@ -15,24 +15,29 @@ type User struct {
 
 // Node represents a monitored server with full metadata.
 type Node struct {
-	ID              string        `json:"id"`
-	Name            string        `json:"name"`
-	Hostname        string        `json:"hostname"`
-	IPAddress       string        `json:"ip_address"`
-	OperatingSystem string        `json:"operating_system"`
-	Architecture    string        `json:"architecture"`
-	Kernel          string        `json:"kernel"`
-	AgentVersion    string        `json:"agent_version"`
-	Status          string        `json:"status"` // online, offline, warning, disabled, unknown
-	LastSeen        *time.Time    `json:"last_seen,omitempty"`
-	CreatedAt       time.Time     `json:"created_at"`
-	UpdatedAt       time.Time     `json:"updated_at"`
-	GroupID         *string       `json:"group_id,omitempty"`
-	GroupName       *string       `json:"group_name,omitempty"`
-	Disabled        bool          `json:"disabled"`
-	Tags            []string      `json:"tags,omitempty"`
-	LatestMetrics   *NodeStats    `json:"latest_metrics,omitempty"`
-	LatestPayload   *AgentPayload `json:"latest_payload,omitempty"`
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	Hostname          string        `json:"hostname"`
+	IPAddress         string        `json:"ip_address"`
+	OperatingSystem   string        `json:"operating_system"`
+	Architecture      string        `json:"architecture"`
+	Kernel            string        `json:"kernel"`
+	AgentVersion      string        `json:"agent_version"`
+	Status            string        `json:"status"` // ONLINE, STALE, DEGRADED, OFFLINE, disabled, unknown
+	ConnectionState   string        `json:"connection_state"` // ONLINE, STALE, DEGRADED, OFFLINE
+	HeartbeatInterval int           `json:"heartbeat_interval"`
+	LatencyMS         float64       `json:"latency_ms"`
+	LastSeen          *time.Time    `json:"last_seen,omitempty"`
+	LastHeartbeat     *time.Time    `json:"last_heartbeat,omitempty"`
+	LastTelemetryAt   *time.Time    `json:"last_telemetry_at,omitempty"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	GroupID           *string       `json:"group_id,omitempty"`
+	GroupName         *string       `json:"group_name,omitempty"`
+	Disabled          bool          `json:"disabled"`
+	Tags              []string      `json:"tags,omitempty"`
+	LatestMetrics     *NodeStats    `json:"latest_metrics,omitempty"`
+	LatestPayload     *AgentPayload `json:"latest_payload,omitempty"`
 }
 
 // NodeToken represents an authentication token for a node agent.
@@ -76,15 +81,83 @@ type AggregatedMetric struct {
 	SampleCount int     `json:"sample_count"`
 }
 
+// ProcessItem represents a real Linux running process snapshot.
+type ProcessItem struct {
+	PID           int     `json:"pid"`
+	Name          string  `json:"name"`
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryBytes   uint64  `json:"memory_bytes"`
+	MemoryPercent float64 `json:"memory_percent"`
+	Threads       int     `json:"threads"`
+	ReadBytesSec  float64 `json:"read_bytes_sec"`
+	WriteBytesSec float64 `json:"write_bytes_sec"`
+	UptimeSeconds int64   `json:"uptime_seconds"`
+	Command       string  `json:"command"`
+}
+
+// DockerContainer represents real Docker container telemetry.
+type DockerContainer struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Image         string  `json:"image"`
+	Status        string  `json:"status"` // Up 2 hours, Exited, etc.
+	State         string  `json:"state"`  // running, exited, paused
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryBytes   uint64  `json:"memory_bytes"`
+	MemoryLimit   uint64  `json:"memory_limit"`
+	NetworkRX     float64 `json:"network_rx"`
+	NetworkTX     float64 `json:"network_tx"`
+	DiskRead      float64 `json:"disk_read"`
+	DiskWrite     float64 `json:"disk_write"`
+	RestartCount  int     `json:"restart_count"`
+	UptimeSeconds int64   `json:"uptime_seconds"`
+}
+
+// DockerReport tracks Docker daemon availability and containers.
+type DockerReport struct {
+	Available  bool              `json:"available"`
+	Message    string            `json:"message,omitempty"` // "Docker not detected" or "Connected"
+	Containers []DockerContainer `json:"containers"`
+}
+
+// NodeLogEntry represents actual system/service log events.
+type NodeLogEntry struct {
+	Timestamp int64  `json:"timestamp"`
+	Unit      string `json:"unit"`
+	Level     string `json:"level"` // info, warning, error, debug
+	Message   string `json:"message"`
+}
+
+// MemoryPressure represents Linux PSI (Pressure Stall Information).
+type MemoryPressure struct {
+	Available bool    `json:"available"`
+	Some10    float64 `json:"some_10"`
+	Some60    float64 `json:"some_60"`
+	Some300   float64 `json:"some_300"`
+	Full10    float64 `json:"full_10"`
+	Full60    float64 `json:"full_60"`
+	Full300   float64 `json:"full_300"`
+}
+
+// SwapActivity represents page in/out rates.
+type SwapActivity struct {
+	Available   bool    `json:"available"`
+	PagesInSec  float64 `json:"pages_in_sec"`
+	PagesOutSec float64 `json:"pages_out_sec"`
+}
+
 // Service represents a monitored service status on a node.
 type Service struct {
 	ID            string    `json:"id"`
 	NodeID        string    `json:"node_id"`
 	Name          string    `json:"name"`
-	Status        string    `json:"status"` // running, stopped, failed, unknown
+	Status        string    `json:"status"` // RUNNING, STOPPED, FAILED, unknown
 	PID           int       `json:"pid,omitempty"`
+	CPUPercent    float64   `json:"cpu_percent,omitempty"`
 	MemoryBytes   int64     `json:"memory_bytes,omitempty"`
 	UptimeSeconds int64     `json:"uptime_seconds,omitempty"`
+	RestartCount  int       `json:"restart_count,omitempty"`
+	LastRestart   string    `json:"last_restart,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
@@ -96,7 +169,7 @@ type AlertRule struct {
 	Operator        string    `json:"operator"`
 	Threshold       float64   `json:"threshold"`
 	DurationSeconds int       `json:"duration_seconds"`
-	Severity        string    `json:"severity"`
+	Severity        string    `json:"severity"` // critical, warning, info
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"created_at"`
 }
@@ -108,11 +181,15 @@ type Alert struct {
 	NodeName       string     `json:"node_name,omitempty"`
 	RuleID         *string    `json:"rule_id,omitempty"`
 	RuleName       string     `json:"rule_name,omitempty"`
+	Metric         string     `json:"metric,omitempty"`
 	Status         string     `json:"status"` // triggered, acknowledged, resolved
-	Severity       string     `json:"severity"`
+	Severity       string     `json:"severity"` // critical, warning, info
 	Message        string     `json:"message"`
 	Value          float64    `json:"value"`
+	Threshold      float64    `json:"threshold"`
+	Duration       string     `json:"duration,omitempty"`
 	TriggeredAt    time.Time  `json:"triggered_at"`
+	LastUpdate     time.Time  `json:"last_update"`
 	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
 	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
 }
@@ -179,6 +256,8 @@ type DiskIODeviceDetail struct {
 	WriteBytesSec   float64 `json:"write_bytes_sec"`
 	ReadOpsSec      float64 `json:"read_ops_sec"`
 	WriteOpsSec     float64 `json:"write_ops_sec"`
+	IOPS            float64 `json:"iops,omitempty"`
+	LatencyMS       float64 `json:"latency_ms,omitempty"`
 	IOTimeMS        int64   `json:"io_time_ms,omitempty"`
 	TotalReadBytes  uint64  `json:"total_read_bytes"`
 	TotalWriteBytes uint64  `json:"total_write_bytes"`
@@ -203,6 +282,11 @@ type NetworkInterfaceDetail struct {
 	TotalTXErrors    uint64   `json:"total_tx_errors"`
 	TotalRXDrops     uint64   `json:"total_rx_drops,omitempty"`
 	TotalTXDrops     uint64   `json:"total_tx_drops,omitempty"`
+	RXDropsSec       float64  `json:"rx_drops_sec,omitempty"`
+	TXDropsSec       float64  `json:"tx_drops_sec,omitempty"`
+	RXErrorsSec      float64  `json:"rx_errors_sec,omitempty"`
+	TXErrorsSec      float64  `json:"tx_errors_sec,omitempty"`
+	PacketLossPct    float64  `json:"packet_loss_pct,omitempty"`
 }
 
 // ThermalSensorDetail represents individual real hardware sensor readings.
@@ -215,18 +299,22 @@ type ThermalSensorDetail struct {
 
 // TCPStateBreakdown represents exact socket state counts from /proc/net/tcp.
 type TCPStateBreakdown struct {
-	Established int `json:"established"`
-	SynSent     int `json:"syn_sent"`
-	SynRecv     int `json:"syn_recv"`
-	FinWait1    int `json:"fin_wait1"`
-	FinWait2    int `json:"fin_wait2"`
-	TimeWait    int `json:"time_wait"`
-	CloseWait   int `json:"close_wait"`
-	LastAck     int `json:"last_ack"`
-	Listen      int `json:"listen"`
-	Closing     int `json:"closing"`
-	Total       int `json:"total"`
-	UDPTotal    int `json:"udp_total"`
+	Established  int     `json:"established"`
+	SynSent      int     `json:"syn_sent"`
+	SynRecv      int     `json:"syn_recv"`
+	FinWait1     int     `json:"fin_wait1"`
+	FinWait2     int     `json:"fin_wait2"`
+	TimeWait     int     `json:"time_wait"`
+	CloseWait    int     `json:"close_wait"`
+	LastAck      int     `json:"last_ack"`
+	Listen       int     `json:"listen"`
+	Closing      int     `json:"closing"`
+	Total        int     `json:"total"`
+	UDPTotal     int     `json:"udp_total"`
+	RetransRate  float64 `json:"retrans_rate,omitempty"`
+	RetransTotal uint64  `json:"retrans_total,omitempty"`
+	InSegs       uint64  `json:"in_segs,omitempty"`
+	OutSegs      uint64  `json:"out_segs,omitempty"`
 }
 
 // ProcessStateBreakdown represents exact process counts by OS state.
@@ -252,86 +340,106 @@ type LoadDetail struct {
 
 // ServiceStatus represents monitored service status.
 type ServiceStatus struct {
-	Name          string `json:"name"`
-	Status        string `json:"status"` // running, stopped, failed, unknown
-	PID           int    `json:"pid,omitempty"`
-	MemoryBytes   int64  `json:"memory_bytes,omitempty"`
-	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+	Name          string  `json:"name"`
+	Status        string  `json:"status"` // RUNNING, STOPPED, FAILED, unknown
+	PID           int     `json:"pid,omitempty"`
+	CPUPercent    float64 `json:"cpu_percent,omitempty"`
+	MemoryBytes   int64   `json:"memory_bytes,omitempty"`
+	UptimeSeconds int64   `json:"uptime_seconds,omitempty"`
+	RestartCount  int     `json:"restart_count,omitempty"`
+	LastRestart   string  `json:"last_restart,omitempty"`
 }
 
 // AgentPayload is the comprehensive, precise batch metrics payload.
 type AgentPayload struct {
-	Timestamp          int64                       `json:"timestamp"`
-	CollectionDurationUS int64                     `json:"collection_duration_us,omitempty"`
-	Collectors         map[string]CollectorReport  `json:"collectors,omitempty"`
+	Timestamp            int64                      `json:"timestamp"`
+	CollectionDurationUS int64                      `json:"collection_duration_us,omitempty"`
+	Collectors           map[string]CollectorReport `json:"collectors,omitempty"`
 
 	// CPU
-	CPU                float64                     `json:"cpu"` // Total percentage
-	CPUUser            float64                     `json:"cpu_user,omitempty"`
-	CPUSystem          float64                     `json:"cpu_system,omitempty"`
-	CPUIdle            float64                     `json:"cpu_idle,omitempty"`
-	CPUIOWait          float64                     `json:"cpu_iowait,omitempty"`
-	CPUSteal           float64                     `json:"cpu_steal,omitempty"`
-	CPUModel           string                      `json:"cpu_model,omitempty"`
-	CPUCount           int                         `json:"cpu_count"`
-	CPUFreqMHz         float64                     `json:"cpu_freq_mhz,omitempty"`
-	CPUPerCore         []CPUCoreUsage              `json:"cpu_per_core,omitempty"`
+	CPU        float64        `json:"cpu"` // Total percentage
+	CPUUser    float64        `json:"cpu_user,omitempty"`
+	CPUSystem  float64        `json:"cpu_system,omitempty"`
+	CPUIdle    float64        `json:"cpu_idle,omitempty"`
+	CPUIOWait  float64        `json:"cpu_iowait,omitempty"`
+	CPUSteal   float64        `json:"cpu_steal,omitempty"`
+	CPUModel   string         `json:"cpu_model,omitempty"`
+	CPUCount   int            `json:"cpu_count"`
+	CPUFreqMHz float64        `json:"cpu_freq_mhz,omitempty"`
+	CPUPerCore []CPUCoreUsage `json:"cpu_per_core,omitempty"`
 
 	// Memory (Exact bytes)
-	Memory             float64                     `json:"memory"` // percentage
-	MemTotalBytes      uint64                      `json:"mem_total_bytes"`
-	MemUsedBytes       uint64                      `json:"mem_used_bytes"`
-	MemFreeBytes       uint64                      `json:"mem_free_bytes"`
-	MemAvailBytes      uint64                      `json:"mem_avail_bytes"`
-	MemBuffersBytes    uint64                      `json:"mem_buffers_bytes,omitempty"`
-	MemCachedBytes     uint64                      `json:"mem_cached_bytes,omitempty"`
-	MemActiveBytes     uint64                      `json:"mem_active_bytes,omitempty"`
-	MemInactiveBytes   uint64                      `json:"mem_inactive_bytes,omitempty"`
-	MemDirtyBytes      uint64                      `json:"mem_dirty_bytes,omitempty"`
-	MemSlabBytes       uint64                      `json:"mem_slab_bytes,omitempty"`
+	Memory           float64        `json:"memory"` // percentage
+	MemTotalBytes    uint64         `json:"mem_total_bytes"`
+	MemUsedBytes     uint64         `json:"mem_used_bytes"`
+	MemFreeBytes     uint64         `json:"mem_free_bytes"`
+	MemAvailBytes    uint64         `json:"mem_avail_bytes"`
+	MemBuffersBytes  uint64         `json:"mem_buffers_bytes,omitempty"`
+	MemCachedBytes   uint64         `json:"mem_cached_bytes,omitempty"`
+	MemActiveBytes   uint64         `json:"mem_active_bytes,omitempty"`
+	MemInactiveBytes uint64         `json:"mem_inactive_bytes,omitempty"`
+	MemDirtyBytes    uint64         `json:"mem_dirty_bytes,omitempty"`
+	MemSlabBytes     uint64         `json:"mem_slab_bytes,omitempty"`
+	MemoryPressure   MemoryPressure `json:"memory_pressure"`
+	SwapActivity     SwapActivity   `json:"swap_activity"`
 
 	// Swap (Exact bytes)
-	Swap               float64                     `json:"swap"` // percentage
-	SwapTotalBytes     uint64                      `json:"swap_total_bytes,omitempty"`
-	SwapUsedBytes      uint64                      `json:"swap_used_bytes,omitempty"`
-	SwapFreeBytes      uint64                      `json:"swap_free_bytes,omitempty"`
+	Swap           float64 `json:"swap"` // percentage
+	SwapTotalBytes uint64  `json:"swap_total_bytes,omitempty"`
+	SwapUsedBytes  uint64  `json:"swap_used_bytes,omitempty"`
+	SwapFreeBytes  uint64  `json:"swap_free_bytes,omitempty"`
 
 	// Disk
-	Disk               float64                     `json:"disk"` // main root percentage
-	DiskTotalBytes     uint64                      `json:"disk_total_bytes"`
-	DiskUsedBytes      uint64                      `json:"disk_used_bytes"`
-	Mounts             []DiskMountDetail           `json:"mounts,omitempty"`
-	DiskIODevices      []DiskIODeviceDetail        `json:"disk_io_devices,omitempty"`
-	DiskReadBytesSec   float64                     `json:"disk_read_bytes_sec"`
-	DiskWriteBytesSec  float64                     `json:"disk_write_bytes_sec"`
-	DiskReadOpsSec     float64                     `json:"disk_read_ops_sec,omitempty"`
-	DiskWriteOpsSec    float64                     `json:"disk_write_ops_sec,omitempty"`
+	Disk              float64              `json:"disk"` // main root percentage
+	DiskTotalBytes    uint64               `json:"disk_total_bytes"`
+	DiskUsedBytes     uint64               `json:"disk_used_bytes"`
+	Mounts            []DiskMountDetail    `json:"mounts,omitempty"`
+	DiskIODevices     []DiskIODeviceDetail `json:"disk_io_devices,omitempty"`
+	DiskReadBytesSec  float64              `json:"disk_read_bytes_sec"`
+	DiskWriteBytesSec float64              `json:"disk_write_bytes_sec"`
+	DiskReadOpsSec    float64              `json:"disk_read_ops_sec,omitempty"`
+	DiskWriteOpsSec   float64              `json:"disk_write_ops_sec,omitempty"`
+	DiskIOPS          float64              `json:"disk_iops,omitempty"`
+	DiskLatencyMS     float64              `json:"disk_latency_ms,omitempty"`
 
 	// Network
-	NetworkRXBytesSec  float64                     `json:"network_rx"` // rate bytes/sec
-	NetworkTXBytesSec  float64                     `json:"network_tx"` // rate bytes/sec
-	TotalRXBytes       uint64                      `json:"total_rx_bytes,omitempty"`
-	TotalTXBytes       uint64                      `json:"total_tx_bytes,omitempty"`
-	Interfaces         []NetworkInterfaceDetail    `json:"interfaces,omitempty"`
+	NetworkRXBytesSec   float64                  `json:"network_rx"` // rate bytes/sec
+	NetworkTXBytesSec   float64                  `json:"network_tx"` // rate bytes/sec
+	NetworkRXPacketsSec float64                  `json:"network_rx_packets,omitempty"`
+	NetworkTXPacketsSec float64                  `json:"network_tx_packets,omitempty"`
+	NetworkRXErrorsSec  float64                  `json:"network_rx_errors,omitempty"`
+	NetworkTXErrorsSec  float64                  `json:"network_tx_errors,omitempty"`
+	NetworkRXDropsSec   float64                  `json:"network_rx_drops,omitempty"`
+	NetworkTXDropsSec   float64                  `json:"network_tx_drops,omitempty"`
+	TotalRXBytes        uint64                   `json:"total_rx_bytes,omitempty"`
+	TotalTXBytes        uint64                   `json:"total_tx_bytes,omitempty"`
+	Interfaces          []NetworkInterfaceDetail `json:"interfaces,omitempty"`
 
 	// Load & System
-	Load               LoadDetail                  `json:"load"`
-	Load1              float64                     `json:"load1"`
-	Load5              float64                     `json:"load5"`
-	Load15             float64                     `json:"load15"`
+	Load   LoadDetail `json:"load"`
+	Load1  float64    `json:"load1"`
+	Load5  float64    `json:"load5"`
+	Load15 float64    `json:"load15"`
 
 	// Temperature
-	Temperature        *float64                    `json:"temperature,omitempty"`
-	ThermalSensors     []ThermalSensorDetail       `json:"thermal_sensors,omitempty"`
+	Temperature    *float64              `json:"temperature,omitempty"`
+	ThermalSensors []ThermalSensorDetail `json:"thermal_sensors,omitempty"`
 
 	// Processes & TCP
-	Processes          ProcessStateBreakdown       `json:"processes"`
-	TCP                TCPStateBreakdown           `json:"tcp"`
-	Services           []ServiceStatus             `json:"services,omitempty"`
+	Processes    ProcessStateBreakdown `json:"processes"`
+	TopProcesses []ProcessItem         `json:"top_processes,omitempty"`
+	TCP          TCPStateBreakdown     `json:"tcp"`
+	Services     []ServiceStatus       `json:"services,omitempty"`
+
+	// Docker
+	Docker DockerReport `json:"docker"`
+
+	// Logs
+	Logs []NodeLogEntry `json:"logs,omitempty"`
 
 	// Uptime & Boot time
-	UptimeSeconds      int64                       `json:"uptime_seconds"`
-	BootTime           int64                       `json:"boot_time,omitempty"`
+	UptimeSeconds int64 `json:"uptime_seconds"`
+	BootTime      int64 `json:"boot_time,omitempty"`
 }
 
 // SystemInfo is sent on register or heartbeat update.
@@ -346,6 +454,12 @@ type SystemInfo struct {
 	BootTime        int64    `json:"boot_time,omitempty"`
 	CPUModel        string   `json:"cpu_model,omitempty"`
 	CPUCount        int      `json:"cpu_count"`
+	CPUThreads      int      `json:"cpu_threads,omitempty"`
+	CPUFreqMHz      float64  `json:"cpu_freq_mhz,omitempty"`
+	RAMTotalBytes   uint64   `json:"ram_total_bytes,omitempty"`
+	SwapTotalBytes  uint64   `json:"swap_total_bytes,omitempty"`
+	PublicIP        string   `json:"public_ip,omitempty"`
+	PrivateIP       string   `json:"private_ip,omitempty"`
 	IPAddresses     []string `json:"ip_addresses"`
 	Timezone        string   `json:"timezone"`
 }
@@ -371,6 +485,7 @@ type DashboardSummary struct {
 	OnlineNodes    int            `json:"online_nodes"`
 	OfflineNodes   int            `json:"offline_nodes"`
 	WarningNodes   int            `json:"warning_nodes"`
+	StaleNodes     int            `json:"stale_nodes"`
 	DisabledNodes  int            `json:"disabled_nodes"`
 	AvgCPU         float64        `json:"avg_cpu"`
 	AvgMemory      float64        `json:"avg_memory"`

@@ -42,14 +42,23 @@ func (c *Client) Register(info *system.SystemInfo) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/agent/register", c.serverURL)
-	return c.postWithRetry(url, data)
+	url := fmt.Sprintf("%s/api/nodes/register", c.serverURL)
+	if err := c.postWithRetry(url, data); err != nil {
+		// Fallback to /api/agent/register
+		fallback := fmt.Sprintf("%s/api/agent/register", c.serverURL)
+		return c.postWithRetry(fallback, data)
+	}
+	return nil
 }
 
 // SendHeartbeat sends a periodic heartbeat.
 func (c *Client) SendHeartbeat() error {
-	url := fmt.Sprintf("%s/api/agent/heartbeat", c.serverURL)
-	return c.postWithRetry(url, []byte("{}"))
+	url := fmt.Sprintf("%s/api/nodes/heartbeat", c.serverURL)
+	if err := c.postWithRetry(url, []byte("{}")); err != nil {
+		fallback := fmt.Sprintf("%s/api/agent/heartbeat", c.serverURL)
+		return c.postWithRetry(fallback, []byte("{}"))
+	}
+	return nil
 }
 
 // SendMetrics posts the batch collected metrics payload.
@@ -60,8 +69,12 @@ func (c *Client) SendMetrics(p *collectors.Payload) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/agent/metrics", c.serverURL)
-	return c.postWithRetry(url, data)
+	url := fmt.Sprintf("%s/api/telemetry", c.serverURL)
+	if err := c.postWithRetry(url, data); err != nil {
+		fallback := fmt.Sprintf("%s/api/agent/metrics", c.serverURL)
+		return c.postWithRetry(fallback, data)
+	}
+	return nil
 }
 
 func (c *Client) postWithRetry(url string, body []byte) error {

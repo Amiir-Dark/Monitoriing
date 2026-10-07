@@ -657,10 +657,123 @@ show_menu() {
 }
 
 # ------------------------------------------------------------------------------
+# Monitoring Agent Installation Handler
+# ------------------------------------------------------------------------------
+
+do_agent_install() {
+    local SERVER_URL="http://localhost:8765"
+    local TOKEN=""
+    local INTERVAL=5
+
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            --token) TOKEN="$2"; shift ;;
+            --server) SERVER_URL="$2"; shift ;;
+            --interval) INTERVAL="$2"; shift ;;
+        esac
+        shift
+    done
+
+    if [ -z "$TOKEN" ]; then
+        clear
+        echo -e "${CYAN}${BOLD}=== NodeWatch Agent Quick Setup ===${NC}\n"
+        read -rp "Enter Central Server URL [e.g. http://1.2.3.4:8765]: " SERVER_URL
+        read -rp "Enter Node Authentication Token: " TOKEN
+        if [ -z "$TOKEN" ]; then
+            echo -e "${RED}[ERROR] Token cannot be empty.${NC}"
+            exit 1
+        fi
+    fi
+
+    local ARCH
+    ARCH=$(uname -m)
+    local AGENT_ARCH="amd64"
+    case $ARCH in
+        x86_64) AGENT_ARCH="amd64" ;;
+        aarch64|arm64) AGENT_ARCH="arm64" ;;
+        armv7l|armhf) AGENT_ARCH="arm" ;;
+    esac
+
+    local AGENT_INSTALL_DIR="/opt/nodewatch"
+    local AGENT_CONFIG_DIR="/etc/nodewatch"
+    local AGENT_SERVICE_FILE="/etc/systemd/system/nodewatch-agent.service"
+
+    mkdir -p "$AGENT_INSTALL_DIR"
+    mkdir -p "$AGENT_CONFIG_DIR"
+
+    cat <<EOF > "$AGENT_CONFIG_DIR/agent.json"
+{
+  "server_url": "$SERVER_URL",
+  "node_token": "$TOKEN",
+  "interval": $INTERVAL
+}
+EOF
+    chmod 600 "$AGENT_CONFIG_DIR/agent.json"
+
+    # Copy binary if local or build or download
+    if [ -f "./nodewatch-agent" ]; then
+        cp ./nodewatch-agent "$AGENT_INSTALL_DIR/nodewatch-agent"
+    elif [ -f "$INSTALL_DIR/downloads/nodewatch-agent" ]; then
+        cp "$INSTALL_DIR/downloads/nodewatch-agent" "$AGENT_INSTALL_DIR/nodewatch-agent"
+    elif [ -f "./agent/nodewatch-agent" ]; then
+        cp ./agent/nodewatch-agent "$AGENT_INSTALL_DIR/nodewatch-agent"
+    elif command -v go >/dev/null 2>&1 && [ -d "./agent" ]; then
+        export GOTOOLCHAIN=local
+        (cd ./agent && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$AGENT_INSTALL_DIR/nodewatch-agent" ./cmd/nodewatch-agent)
+    else
+        # Download from central server /downloads endpoint
+        curl -fsSL -o "$AGENT_INSTALL_DIR/nodewatch-agent" "$SERVER_URL/downloads/nodewatch-agent" 2>/dev/null || \
+        curl -fsSL -o "$AGENT_INSTALL_DIR/nodewatch-agent" "$SERVER_URL/downloads/nodewatch-agent-$AGENT_ARCH" 2>/dev/null || true
+    fi
+
+    if [ -f "$AGENT_INSTALL_DIR/nodewatch-agent" ]; then
+        chmod +x "$AGENT_INSTALL_DIR/nodewatch-agent"
+    fi
+
+    cat <<EOF > "$AGENT_SERVICE_FILE"
+[Unit]
+Description=NodeWatch Monitoring Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=$AGENT_INSTALL_DIR/nodewatch-agent -config $AGENT_CONFIG_DIR/agent.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+CPUQuota=10%
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable nodewatch-agent
+    systemctl restart nodewatch-agent
+    sleep 1
+
+    if systemctl is-active --quiet nodewatch-agent; then
+        echo -e "\n${GREEN}${BOLD}✔ NodeWatch Agent is online and streaming live telemetry to $SERVER_URL!${NC}\n"
+    else
+        echo -e "\n${RED}✖ Agent installed but failed to start. View logs with: journalctl -u nodewatch-agent -n 20${NC}\n"
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # Entry Point
 # ------------------------------------------------------------------------------
 
 check_root
+
+# Check if agent installation flags are passed
+for arg in "$@"; do
+    if [ "$arg" == "--token" ] || [ "$arg" == "--agent" ]; then
+        do_agent_install "$@"
+        exit 0
+    fi
+done
 
 # Parse command line flags if provided
 if [ "$1" == "--install" ] || [ "$1" == "-i" ]; then

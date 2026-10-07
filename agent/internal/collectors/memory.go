@@ -6,9 +6,34 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
-type MemoryCollector struct{}
+// MemoryPressure represents Linux PSI (Pressure Stall Information).
+type MemoryPressure struct {
+	Available bool    `json:"available"`
+	Some10    float64 `json:"some_10"`
+	Some60    float64 `json:"some_60"`
+	Some300   float64 `json:"some_300"`
+	Full10    float64 `json:"full_10"`
+	Full60    float64 `json:"full_60"`
+	Full300   float64 `json:"full_300"`
+}
+
+// SwapActivity represents page in/out rates.
+type SwapActivity struct {
+	Available   bool    `json:"available"`
+	PagesInSec  float64 `json:"pages_in_sec"`
+	PagesOutSec float64 `json:"pages_out_sec"`
+}
+
+type MemoryCollector struct {
+	mu           sync.Mutex
+	lastPswpIn   uint64
+	lastPswpOut  uint64
+	lastSampleAt time.Time
+}
 
 func NewMemoryCollector() *MemoryCollector {
 	return &MemoryCollector{}
@@ -122,5 +147,97 @@ func (m *MemoryCollector) Collect(p *Payload) (CollectorReport, error) {
 		p.Swap = math.Round(swapPct*10) / 10
 	}
 
+	// Read PSI Memory Pressure from /proc/pressure/memory
+	p.MemoryPressure = readMemoryPressure()
+
+	// Read Swap Activity from /proc/vmstat
+	m.collectSwapActivity(p)
+
 	return CollectorReport{Status: "ok"}, nil
+}
+
+func readMemoryPressure() MemoryPressure {
+	data, err := os.ReadFile("/proc/pressure/memory")
+	if err != nil {
+		return MemoryPressure{Available: false}
+	}
+
+	mp := MemoryPressure{Available: true}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		prefix := fields[0]
+
+		parseAvg := func(raw string) float64 {
+			parts := strings.Split(raw, "=")
+			if len(parts) == 2 {
+				if v, err := strconv.ParseFloat(parts[1], 64); err == nil {
+					return v
+				}
+			}
+			return 0
+		}
+
+		if prefix == "some" {
+			mp.Some10 = parseAvg(fields[1])
+			mp.Some60 = parseAvg(fields[2])
+			mp.Some300 = parseAvg(fields[3])
+		} else if prefix == "full" {
+			mp.Full10 = parseAvg(fields[1])
+			mp.Full60 = parseAvg(fields[2])
+			mp.Full300 = parseAvg(fields[3])
+		}
+	}
+	return mp
+}
+
+func (m *MemoryCollector) collectSwapActivity(p *Payload) {
+	data, err := os.ReadFile("/proc/vmstat")
+	if err != nil {
+		p.SwapActivity = SwapActivity{Available: false}
+		return
+	}
+
+	var pswpIn, pswpOut uint64
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) == 2 {
+			if fields[0] == "pswpin" {
+				pswpIn, _ = strconv.ParseUint(fields[1], 10, 64)
+			} else if fields[0] == "pswpout" {
+				pswpOut, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	var inRate, outRate float64
+	if !m.lastSampleAt.IsZero() {
+		elapsedSec := now.Sub(m.lastSampleAt).Seconds()
+		if elapsedSec > 0.05 {
+			if pswpIn >= m.lastPswpIn {
+				inRate = math.Round((float64(pswpIn-m.lastPswpIn)/elapsedSec)*10) / 10
+			}
+			if pswpOut >= m.lastPswpOut {
+				outRate = math.Round((float64(pswpOut-m.lastPswpOut)/elapsedSec)*10) / 10
+			}
+		}
+	}
+
+	m.lastPswpIn = pswpIn
+	m.lastPswpOut = pswpOut
+	m.lastSampleAt = now
+
+	p.SwapActivity = SwapActivity{
+		Available:   true,
+		PagesInSec:  inRate,
+		PagesOutSec: outRate,
+	}
 }
