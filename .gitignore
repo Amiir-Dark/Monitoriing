@@ -1,13 +1,13 @@
-# Binaries and compiled executables
+# Compiled binary executables
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-backend/nodewatch
-agent/nodewatch-agent
-nodewatch
-nodewatch-agent
+/nodewatch
+/nodewatch-agent
+/backend/nodewatch
+/agent/nodewatch-agent
 
 # Node.js dependencies
 node_modules/
